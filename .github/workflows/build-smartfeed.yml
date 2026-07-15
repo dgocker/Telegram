@@ -5,10 +5,19 @@ on:
     branches: [ smart-feed ]
   workflow_dispatch:
 
+concurrency:
+  group: smartfeed-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+      # cmake >= 3.17 подхватывает лаунчеры из env — build.gradle трогать не нужно
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,6 +28,17 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
+
+      - name: Install ccache
+        run: sudo apt-get install -y ccache
+
+      - name: Restore native build cache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ccache-ndk-${{ hashFiles('TMessagesProj/jni/**/*.c', 'TMessagesProj/jni/**/*.cpp', 'TMessagesProj/jni/**/*.h', 'TMessagesProj/jni/**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-ndk-
 
       - name: Install Android SDK components
         run: |
@@ -32,7 +52,9 @@ jobs:
       - name: Build standalone afat (arm64-v8a)
         run: |
           set -o pipefail
+          ccache -z || true
           ./gradlew :TMessagesProj_AppStandalone:assembleAfatStandalone --console=plain 2>&1 | tee build.log
+          ccache -s || true
 
       - name: Upload APK
         if: success()
