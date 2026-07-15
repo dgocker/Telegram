@@ -31,7 +31,6 @@ import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.feed.FeedController;
-import org.telegram.messenger.feed.FeedSummarizer;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -39,14 +38,12 @@ import org.telegram.ui.Components.Bulletin;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.EmptyTextProgressView;
 import org.telegram.ui.Components.FeedCommentsPanel;
-import org.telegram.ui.Components.FeedModelDownloadAlert;
 import org.telegram.ui.Components.FeedPageView;
 import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.Components.RecyclerListView;
 import org.telegram.ui.Components.ShareAlert;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 
 /**
  * Умная лента в стиле TikTok: вертикальный полноэкранный пейджер постов.
@@ -65,12 +62,8 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private LinearLayoutManager layoutManager;
     private PagerAdapter adapter;
     private EmptyTextProgressView emptyView;
-    private TextView modelChip;
     private FeedCommentsPanel commentsPanel;
 
-    private final HashSet<String> requestedSummaries = new HashSet<>();
-    private final java.util.HashMap<String, Integer> summaryAttempts = new java.util.HashMap<>();
-    private boolean modelDownloaded;
 
     private int currentPage = -1;
     private long pageShownTime;
@@ -86,7 +79,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             hasMainTabs = arguments.getBoolean("hasMainTabs", false);
         }
         additionNavigationBarHeight = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
-        modelDownloaded = FeedSummarizer.isModelDownloaded();
         getNotificationCenter().addObserver(this, NotificationCenter.smartFeedDidLoad);
         getNotificationCenter().addObserver(this, NotificationCenter.dialogsNeedReload);
         FeedController.getInstance(currentAccount).loadFeed(false);
@@ -152,17 +144,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         pager.setEmptyView(emptyView);
         contentView.addView(pager, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
 
-        modelChip = new TextView(context);
-        modelChip.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-        modelChip.setTypeface(AndroidUtilities.bold());
-        modelChip.setTextColor(Color.WHITE);
-        modelChip.setBackground(org.telegram.ui.ActionBar.Theme.createRoundRectDrawable(dp(16), 0x66000000));
-        modelChip.setPadding(dp(12), dp(6), dp(12), dp(6));
-        modelChip.setText(getString(R.string.SmartFeedModelBanner));
-        modelChip.setOnClickListener(v -> showModelDownloadAlert());
-        modelChip.setVisibility(modelDownloaded ? View.GONE : View.VISIBLE);
-        contentView.addView(modelChip, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 8, 0, 0));
-
         commentsPanel = new FeedCommentsPanel(context, currentAccount, this);
         contentView.addView(commentsPanel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 400, Gravity.BOTTOM));
 
@@ -180,9 +161,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     }
 
     private void applyInsets() {
-        if (modelChip != null) {
-            ((FrameLayout.LayoutParams) modelChip.getLayoutParams()).topMargin = statusBarHeight + dp(8);
-        }
         if (commentsPanel != null) {
             int panelHeight = (int) ((AndroidUtilities.displaySize.y) * 0.66f);
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) commentsPanel.getLayoutParams();
@@ -218,7 +196,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     @Override
     public void onResume() {
         super.onResume();
-        checkModelDownloaded();
         FeedController.getInstance(currentAccount).loadFeed(false);
         updateEmptyView();
         pageShownTime = SystemClock.elapsedRealtime();
@@ -230,19 +207,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         super.onPause();
         trackCurrentDwell();
         setPageActive(currentPage, false);
-    }
-
-    private void checkModelDownloaded() {
-        boolean downloaded = FeedSummarizer.isModelDownloaded();
-        if (downloaded != modelDownloaded) {
-            modelDownloaded = downloaded;
-            if (modelChip != null) {
-                modelChip.setVisibility(modelDownloaded ? View.GONE : View.VISIBLE);
-            }
-            if (adapter != null) {
-                adapter.notifyDataSetChanged();
-            }
-        }
     }
 
     @Override
@@ -281,13 +245,6 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         } else {
             emptyView.showTextView();
         }
-    }
-
-    private void showModelDownloadAlert() {
-        if (getParentActivity() == null) {
-            return;
-        }
-        FeedModelDownloadAlert.show(getParentActivity(), getResourceProvider(), this::checkModelDownloaded);
     }
 
     /* Пейджер */
@@ -340,23 +297,34 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         return null;
     }
 
-    /* Предзагрузка следующих постов: выжимки + фотографии */
+    /* Предзагрузка: выжимки пачкой на верхушку ленты + адаптивный к сети префетч фото */
+
+    /** Глубина префетча по скорости сети: WiFi — глубже и больше, медленный мобильный — минимум. */
+    private int prefetchDepth() {
+        if (org.telegram.messenger.ApplicationLoader.isConnectedToWiFi()) {
+            return 5;
+        }
+        if (org.telegram.messenger.ApplicationLoader.isConnectionSlow()) {
+            return 1;
+        }
+        return PRELOAD_AHEAD;
+    }
 
     private void preloadAhead(int position) {
         ArrayList<FeedController.FeedPost> posts = getPosts();
         clearPrefetch();
-        for (int offset = 1; offset <= PRELOAD_AHEAD; offset++) {
+        final int depth = prefetchDepth();
+        for (int offset = 1; offset <= depth; offset++) {
             int index = position + offset;
             if (index >= posts.size()) {
                 break;
             }
             FeedController.FeedPost post = posts.get(index);
-            requestSummary(post, null);
-            prefetchMedia(post);
+            prefetchMedia(post, offset);
         }
     }
 
-    private void prefetchMedia(FeedController.FeedPost post) {
+    private void prefetchMedia(FeedController.FeedPost post, int offset) {
         ArrayList<MessageObject> media = post.album;
         if (media == null) {
             if (post.message.photoThumbs == null || post.message.photoThumbs.isEmpty()) {
@@ -365,12 +333,16 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             media = new ArrayList<>();
             media.add(post.message);
         }
-        for (int i = 0; i < Math.min(2, media.size()); i++) {
+        final boolean slow = org.telegram.messenger.ApplicationLoader.isConnectionSlow();
+        final int mediaCount = slow ? 1 : Math.min(2, media.size());
+        for (int i = 0; i < Math.min(mediaCount, media.size()); i++) {
             MessageObject messageObject = media.get(i);
             if (messageObject.isVideo()) {
                 continue; // видео стримится автоплеем при показе
             }
-            TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, AndroidUtilities.getPhotoSize());
+            // на медленной сети дальним постам качаем уменьшенный размер — полный догрузится при показе
+            final int sizePx = slow && offset > 1 ? 640 : AndroidUtilities.getPhotoSize();
+            TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, sizePx);
             if (photoSize == null) {
                 continue;
             }
@@ -401,59 +373,22 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
 
     /* Выжимки */
 
+    /** ИИ-выжимка отменена: показываем оригинальный текст, обрезанный по длине. */
+    private static final int FEED_TEXT_LIMIT = 700;
+
     private void requestSummary(FeedController.FeedPost post, FeedPageView targetPage) {
-        final String text = post.getText();
-        if (TextUtils.isEmpty(text)) {
-            if (targetPage != null) {
-                targetPage.setSummary(null, true);
-            }
+        if (targetPage == null) {
             return;
         }
-        final String cached = FeedSummarizer.getInstance().getCached(post.dialogId, post.getId());
-        if (cached != null) {
-            if (targetPage != null) {
-                targetPage.setSummary(cached, modelDownloaded);
+        String text = post.getText();
+        if (text != null) {
+            text = text.trim();
+            if (text.length() > FEED_TEXT_LIMIT) {
+                int cut = text.lastIndexOf(' ', FEED_TEXT_LIMIT);
+                text = text.substring(0, cut > FEED_TEXT_LIMIT / 2 ? cut : FEED_TEXT_LIMIT) + "…";
             }
-            return;
         }
-        if (text.length() < FeedSummarizer.MIN_TEXT_LENGTH_TO_SUMMARIZE) {
-            if (targetPage != null) {
-                targetPage.setSummary(text.trim(), modelDownloaded);
-            }
-            return;
-        }
-        if (targetPage != null) {
-            targetPage.setSummary(null, modelDownloaded);
-        }
-        if (!modelDownloaded) {
-            return;
-        }
-        final String key = post.dialogId + "_" + post.getId();
-        if (requestedSummaries.contains(key)) {
-            return;
-        }
-        requestedSummaries.add(key);
-        final FeedController.FeedPost requestedPost = post;
-        FeedSummarizer.getInstance().summarize(post.dialogId, post.getId(), text, summary -> {
-            requestedSummaries.remove(key);
-            FeedPageView page = findPageForPost(requestedPost);
-            if (summary != null) {
-                summaryAttempts.remove(key);
-                if (page != null) {
-                    page.setSummary(summary, true);
-                }
-                return;
-            }
-            int attempts = summaryAttempts.containsKey(key) ? summaryAttempts.get(key) : 0;
-            summaryAttempts.put(key, attempts + 1);
-            if (page != null) {
-                if (attempts + 1 < 3) {
-                    requestSummary(requestedPost, page);
-                } else {
-                    page.setSummary(text.trim(), true);
-                }
-            }
-        });
+        targetPage.setSummary(text, true);
     }
 
     /* TabFragmentDelegate */

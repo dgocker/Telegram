@@ -695,7 +695,6 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
         items.add(SettingCell.Factory.of(8, IconBackgroundColors.CYAN.top, IconBackgroundColors.CYAN.bottom, R.drawable.settings_devices, getString(R.string.SettingsDevices), getString(R.string.SettingsDevicesInfo)));
         items.add(SettingCell.Factory.of(9, IconBackgroundColors.ORANGE_DEEP.top, IconBackgroundColors.ORANGE_DEEP.bottom, R.drawable.settings_power, getString(R.string.SettingsPowerSaving), getString(R.string.SettingsPowerSavingInfo)));
         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
-        items.add(SettingCell.Factory.of(40, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_premium, getString(R.string.SmartFeedSummaryLength), getSummaryLengthValueString()));
 
         items.add(UItem.asShadow(null));
 
@@ -879,52 +878,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
                 }
                 break;
             }
-            case 40:
-                showSummaryLengthDialog();
-                break;
         }
-    }
-
-    private String getSummaryLengthValueString() {
-        switch (org.telegram.messenger.feed.FeedSummarizer.getSummaryLength()) {
-            case org.telegram.messenger.feed.FeedSummarizer.LEN_SHORT:
-                return getString(R.string.SmartFeedSummaryShort);
-            case org.telegram.messenger.feed.FeedSummarizer.LEN_DETAILED:
-                return getString(R.string.SmartFeedSummaryDetailed);
-            default:
-                return getString(R.string.SmartFeedSummaryMedium);
-        }
-    }
-
-    private void showSummaryLengthDialog() {
-        if (getParentActivity() == null) {
-            return;
-        }
-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourceProvider);
-        builder.setTitle(getString(R.string.SmartFeedSummaryLength));
-        android.widget.LinearLayout container = new android.widget.LinearLayout(getParentActivity());
-        container.setOrientation(android.widget.LinearLayout.VERTICAL);
-        android.widget.TextView infoText = new android.widget.TextView(getParentActivity());
-        infoText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 14);
-        infoText.setTextColor(Theme.getColor(Theme.key_dialogTextGray3, resourceProvider));
-        infoText.setPadding(AndroidUtilities.dp(24), AndroidUtilities.dp(4), AndroidUtilities.dp(24), 0);
-        infoText.setText(getString(R.string.SmartFeedSummaryLengthInfo));
-        container.addView(infoText, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-        org.telegram.ui.Components.SlideChooseView slideChooseView = new org.telegram.ui.Components.SlideChooseView(getParentActivity(), resourceProvider);
-        slideChooseView.setOptions(org.telegram.messenger.feed.FeedSummarizer.getSummaryLength(),
-            getString(R.string.SmartFeedSummaryShort),
-            getString(R.string.SmartFeedSummaryMedium),
-            getString(R.string.SmartFeedSummaryDetailed));
-        slideChooseView.setCallback(index -> {
-            org.telegram.messenger.feed.FeedSummarizer.setSummaryLength(index);
-            if (listView != null && listView.adapter != null) {
-                listView.adapter.update(true);
-            }
-        });
-        container.addView(slideChooseView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-        builder.setView(container);
-        builder.setPositiveButton(getString(R.string.OK), null);
-        showDialog(builder.create());
     }
 
     private boolean onLongClick(UItem item, View view, int position, float x, float y) {

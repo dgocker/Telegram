@@ -78,6 +78,9 @@ public class FeedPageView extends FrameLayout {
     private final TextView summaryTextView;
     private final TextView centerTextView;
     private final LinearLayout buttonsColumn;
+    private ActionButton commentsButton;
+    private TextView commentsCountView;
+    private boolean commentsEnabled;
     private final FrameLayout fullTextOverlay;
     private final TextView fullTextView;
 
@@ -193,20 +196,25 @@ public class FeedPageView extends FrameLayout {
         centerTextView.setOnClickListener(v -> setFullTextShown(true));
         addView(centerTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 20, 40, 76, 90));
 
-        // полный текст поверх с блюром
+        // полный текст поверх с блюром: мало текста — по центру, много — растёт и скроллится
         fullTextOverlay = new FrameLayout(context);
         fullTextOverlay.setBackgroundColor(0xB3000000);
         fullTextOverlay.setVisibility(GONE);
         fullTextOverlay.setOnClickListener(v -> setFullTextShown(false));
         ScrollView scrollView = new ScrollView(context);
         scrollView.setVerticalScrollBarEnabled(false);
+        scrollView.setFillViewport(true);
+        FrameLayout centerWrapper = new FrameLayout(context);
+        centerWrapper.setOnClickListener(v -> setFullTextShown(false));
         fullTextView = new TextView(context);
         fullTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         fullTextView.setTextColor(Color.WHITE);
         fullTextView.setLineSpacing(dp(3), 1f);
+        fullTextView.setGravity(Gravity.CENTER);
         fullTextView.setPadding(dp(18), dp(24), dp(18), dp(24));
         fullTextView.setOnClickListener(v -> setFullTextShown(false));
-        scrollView.addView(fullTextView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        centerWrapper.addView(fullTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER));
+        scrollView.addView(centerWrapper, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         fullTextOverlay.addView(scrollView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
         addView(fullTextOverlay, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
 
@@ -221,11 +229,18 @@ public class FeedPageView extends FrameLayout {
                 delegate.onDislike(post);
             }
         });
-        addActionButton(R.drawable.msg_discussion, v -> {
-            if (delegate != null && post != null) {
+        commentsButton = addActionButton(R.drawable.msg_discussion, v -> {
+            if (delegate != null && post != null && commentsEnabled) {
                 delegate.onOpenComments(post);
             }
         });
+        commentsCountView = new TextView(context);
+        commentsCountView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+        commentsCountView.setTypeface(AndroidUtilities.bold());
+        commentsCountView.setTextColor(Color.WHITE);
+        commentsCountView.setGravity(Gravity.CENTER_HORIZONTAL);
+        commentsCountView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
+        buttonsColumn.addView(commentsCountView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, -6, 0, 4));
         addActionButton(R.drawable.msg_forward, v -> {
             if (delegate != null && post != null) {
                 delegate.onShareTelegram(post);
@@ -243,14 +258,46 @@ public class FeedPageView extends FrameLayout {
         });
     }
 
-    private void addActionButton(int iconRes, OnClickListener listener) {
-        ImageView button = new ImageView(getContext());
+    private ActionButton addActionButton(int iconRes, OnClickListener listener) {
+        ActionButton button = new ActionButton(getContext());
         button.setScaleType(ImageView.ScaleType.CENTER);
         button.setImageResource(iconRes);
         button.setColorFilter(new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
         button.setBackground(Theme.createSelectorDrawable(0x33FFFFFF, 1));
         button.setOnClickListener(listener);
         buttonsColumn.addView(button, LayoutHelper.createLinear(48, 48, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 6));
+        return button;
+    }
+
+    /** Кнопка действия; в состоянии crossed рисует диагональную черту («выключено»). */
+    private static class ActionButton extends ImageView {
+
+        private final Paint crossPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private boolean crossed;
+
+        public ActionButton(Context context) {
+            super(context);
+            crossPaint.setColor(Color.WHITE);
+            crossPaint.setStrokeWidth(dp(2));
+            crossPaint.setStrokeCap(Paint.Cap.ROUND);
+            crossPaint.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
+        }
+
+        public void setCrossed(boolean value) {
+            if (crossed != value) {
+                crossed = value;
+                setAlpha(crossed ? 0.6f : 1f);
+                invalidate();
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (crossed) {
+                canvas.drawLine(dp(13), dp(13), getWidth() - dp(13), getHeight() - dp(13), crossPaint);
+            }
+        }
     }
 
     public void setDelegate(Delegate delegate) {
@@ -280,6 +327,16 @@ public class FeedPageView extends FrameLayout {
             mediaMessages.addAll(post.album);
         } else if (post.message.photoThumbs != null && !post.message.photoThumbs.isEmpty()) {
             mediaMessages.add(post.message);
+        }
+
+        // комментарии доступны только у постов с привязанной discussion-группой
+        TLRPC.MessageReplies replies = post.message.messageOwner.replies;
+        commentsEnabled = replies != null && replies.comments;
+        commentsButton.setCrossed(!commentsEnabled);
+        int commentsCount = commentsEnabled ? replies.replies : 0;
+        commentsCountView.setVisibility(commentsCount > 0 ? VISIBLE : GONE);
+        if (commentsCount > 0) {
+            commentsCountView.setText(LocaleController.formatShortNumber(commentsCount, null));
         }
 
         avatarDrawable.setInfo(post.chat);

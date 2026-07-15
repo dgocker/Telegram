@@ -155,25 +155,42 @@ public class FeedSummarizer {
         }
     }
 
-    // LIFO с вытеснением: при быстрой прокрутке видимый сейчас пост обрабатывается
-    // первым, а не ждёт хвост из уже пролистанных
-    private static final int MAX_PENDING_JOBS = 6;
-    private final java.util.ArrayDeque<Job> jobs = new java.util.ArrayDeque<>();
+    // две очереди: срочная (видимые сейчас посты, LIFO с вытеснением) и фоновая
+    // (пакетная предзагрузка верхушки ленты, FIFO) — срочные всегда первыми
+    private static final int MAX_URGENT_JOBS = 6;
+    private static final int MAX_BATCH_JOBS = 20;
+    private final java.util.ArrayDeque<Job> urgentJobs = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Job> batchJobs = new java.util.ArrayDeque<>();
+
+    public void summarize(long dialogId, int messageId, String text, Utilities.Callback<String> onDone) {
+        summarize(dialogId, messageId, text, true, onDone);
+    }
 
     /**
      * Асинхронная выжимка. Колбэк приходит на UI-потоке; null — модель недоступна,
      * ошибка или запрос вытеснен из очереди (можно перезапросить).
+     * urgent=false — фоновая предзагрузка, не мешает видимым постам.
      */
-    public void summarize(long dialogId, int messageId, String text, Utilities.Callback<String> onDone) {
+    public void summarize(long dialogId, int messageId, String text, boolean urgent, Utilities.Callback<String> onDone) {
         final String key = dialogId + "_" + messageId + "_" + getSummaryLength();
         java.util.ArrayList<Job> dropped = null;
-        synchronized (jobs) {
-            jobs.addFirst(new Job(key, text, onDone));
-            while (jobs.size() > MAX_PENDING_JOBS) {
-                if (dropped == null) {
-                    dropped = new java.util.ArrayList<>();
+        synchronized (urgentJobs) {
+            if (urgent) {
+                urgentJobs.addFirst(new Job(key, text, onDone));
+                while (urgentJobs.size() > MAX_URGENT_JOBS) {
+                    if (dropped == null) {
+                        dropped = new java.util.ArrayList<>();
+                    }
+                    dropped.add(urgentJobs.removeLast());
                 }
-                dropped.add(jobs.removeLast());
+            } else {
+                batchJobs.addLast(new Job(key, text, onDone));
+                while (batchJobs.size() > MAX_BATCH_JOBS) {
+                    if (dropped == null) {
+                        dropped = new java.util.ArrayList<>();
+                    }
+                    dropped.add(batchJobs.removeFirst());
+                }
             }
         }
         if (dropped != null) {
@@ -185,11 +202,29 @@ public class FeedSummarizer {
     }
 
     private void drainQueue() {
-        Job job;
-        synchronized (jobs) {
-            job = jobs.pollFirst();
+        Job polled;
+        synchronized (urgentJobs) {
+            polled = urgentJobs.pollFirst();
+            if (polled == null) {
+                polled = batchJobs.pollFirst();
+            }
         }
-        if (job == null) {
+        if (polled == null) {
+            return;
+        }
+        final Job job = polled;
+        // пакетные задания могут дублировать уже посчитанное — не жжём CPU зря
+        String cached;
+        synchronized (memoryCache) {
+            cached = memoryCache.get(job.cacheKey);
+        }
+        if (cached == null) {
+            cached = getCachePrefs().getString(job.cacheKey, null);
+        }
+        if (cached != null) {
+            final Job finishedJob = job;
+            final String finalCached = cached;
+            AndroidUtilities.runOnUIThread(() -> finishedJob.onDone.run(finalCached));
             return;
         }
         String result = null;
