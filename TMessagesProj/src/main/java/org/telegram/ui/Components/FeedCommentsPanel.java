@@ -112,11 +112,17 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
 
         FrameLayout inputBar = new FrameLayout(context);
         inputBar.setBackgroundColor(Theme.getColor(Theme.key_dialogBackground));
-        addView(inputBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 50, Gravity.BOTTOM));
+        addView(inputBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 56, Gravity.BOTTOM));
 
         View divider = new View(context);
         divider.setBackgroundColor(Theme.getColor(Theme.key_divider));
         inputBar.addView(divider, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1, Gravity.TOP));
+
+        // явная плашка поля ввода, чтобы его было видно
+        FrameLayout inputPill = new FrameLayout(context);
+        inputPill.setBackground(Theme.createRoundRectDrawable(dp(20), Theme.getColor(Theme.key_windowBackgroundGray)));
+        inputPill.setPadding(dp(4), 0, dp(4), 0);
+        inputBar.addView(inputPill, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 40, Gravity.CENTER_VERTICAL, 12, 0, 12, 0));
 
         editText = new EditTextBoldCursor(context);
         editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
@@ -125,8 +131,9 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         editText.setHintText(getString(R.string.SmartFeedCommentHint));
         editText.setBackground(null);
         editText.setSingleLine(true);
-        editText.setPadding(dp(16), 0, dp(8), 0);
-        inputBar.addView(editText, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.LEFT, 0, 1, 52, 0));
+        editText.setPadding(dp(12), 0, dp(8), 0);
+        editText.setGravity(Gravity.CENTER_VERTICAL);
+        inputPill.addView(editText, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.LEFT, 0, 0, 44, 0));
 
         ImageView sendButton = new ImageView(context);
         sendButton.setScaleType(ImageView.ScaleType.CENTER);
@@ -137,10 +144,10 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
             if (loader != null && loader.send(editText.getText().toString())) {
                 editText.setText("");
                 AndroidUtilities.hideKeyboard(editText);
-                listView.smoothScrollToPosition(Math.max(0, adapter.getItemCount() - 1));
+                listView.smoothScrollToPosition(0); // свой коммент теперь сверху
             }
         });
-        inputBar.addView(sendButton, LayoutHelper.createFrame(48, 48, Gravity.RIGHT | Gravity.CENTER_VERTICAL, 0, 1, 2, 0));
+        inputPill.addView(sendButton, LayoutHelper.createFrame(40, 40, Gravity.RIGHT | Gravity.CENTER_VERTICAL));
     }
 
     /** Отступ под плавающую нижнюю навигацию, чтобы поле ввода не заезжало под таб-бар. */
@@ -151,46 +158,123 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         }
     }
 
-    /* Потянуть заголовок вниз — закрыть с плавным уходом (как bottom sheet в TG) */
+    /* Закрытие потягиванием вниз (заголовок или верх списка) и свайпом вправо */
 
-    private float dragStartY;
+    private float dragStartX, dragStartY;
     private boolean dragging;
+    private boolean horizontalDrag;
 
     private boolean onHeaderTouch(View v, MotionEvent e) {
+        return handleDrag(e, true);
+    }
+
+    private boolean listAtTop() {
+        return !listView.canScrollVertically(-1);
+    }
+
+    /** Драг для закрытия. fromHeader=true — с заголовка (всегда), иначе — со списка (только когда он вверху). */
+    private boolean handleDrag(MotionEvent e, boolean fromHeader) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                dragStartX = e.getRawX();
                 dragStartY = e.getRawY();
                 dragging = false;
-                return true;
+                horizontalDrag = false;
+                return fromHeader;
             case MotionEvent.ACTION_MOVE: {
+                float dx = e.getRawX() - dragStartX;
                 float dy = e.getRawY() - dragStartY;
-                if (dy > 0) {
-                    dragging = true;
-                    setTranslationY(dy);
-                    int height = getHeight() > 0 ? getHeight() : dp(400);
-                    if (delegate != null) {
-                        delegate.onShrinkProgress(Math.max(0f, 1f - dy / height), height);
+                if (!dragging) {
+                    if (Math.abs(dx) > dp(12) && Math.abs(dx) > Math.abs(dy)) {
+                        dragging = true;
+                        horizontalDrag = true;
+                    } else if (dy > dp(12) && dy > Math.abs(dx) && (fromHeader || listAtTop())) {
+                        dragging = true;
+                        horizontalDrag = false;
                     }
                 }
-                return true;
+                if (dragging) {
+                    int height = getHeight() > 0 ? getHeight() : dp(400);
+                    if (horizontalDrag) {
+                        setTranslationX(Math.max(0, dx));
+                        if (delegate != null) {
+                            delegate.onShrinkProgress(Math.max(0f, 1f - Math.max(0, dx) / getWidth()), height);
+                        }
+                    } else if (dy > 0) {
+                        setTranslationY(dy);
+                        if (delegate != null) {
+                            delegate.onShrinkProgress(Math.max(0f, 1f - dy / height), height);
+                        }
+                    }
+                    return true;
+                }
+                return fromHeader;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
-                float dy = e.getRawY() - dragStartY;
-                if (dragging && dy > getHeight() * 0.25f) {
-                    hide();
-                } else {
-                    animateTo(1f, null);
+                if (dragging) {
+                    float dx = e.getRawX() - dragStartX;
+                    float dy = e.getRawY() - dragStartY;
+                    boolean dismiss = horizontalDrag ? dx > getWidth() * 0.3f : dy > getHeight() * 0.22f;
+                    if (dismiss) {
+                        hide();
+                    } else {
+                        setTranslationX(0);
+                        animateTo(1f, null);
+                    }
                 }
+                boolean wasDragging = dragging;
                 dragging = false;
+                return fromHeader || wasDragging;
+            }
+        }
+        return false;
+    }
+
+    // перехват вертикального драга со списка, когда он в самом верху
+    private boolean interceptListDrag;
+
+    @Override
+    public boolean onInterceptTouchEvent(MotionEvent e) {
+        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            dragStartX = e.getRawX();
+            dragStartY = e.getRawY();
+            interceptListDrag = false;
+            return false;
+        }
+        if (e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            float dx = e.getRawX() - dragStartX;
+            float dy = e.getRawY() - dragStartY;
+            if ((dy > dp(14) && dy > Math.abs(dx) && listAtTop()) || (Math.abs(dx) > dp(14) && Math.abs(dx) > Math.abs(dy))) {
+                interceptListDrag = true;
                 return true;
             }
         }
         return false;
     }
 
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        if (interceptListDrag) {
+            return handleDrag(e, false);
+        }
+        return super.onTouchEvent(e);
+    }
+
     public boolean isShown() {
         return shown;
+    }
+
+    /** Жёсткая остановка (при уничтожении фрагмента): гасит живой опрос комментов. */
+    public void onDestroy() {
+        shown = false;
+        if (loader != null) {
+            loader.stopLive();
+            loader = null;
+        }
+        if (animator != null) {
+            animator.cancel();
+        }
     }
 
     public void show(FeedController.FeedPost newPost) {
@@ -215,8 +299,15 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
             return;
         }
         shown = false;
+        if (loader != null) {
+            loader.stopLive();
+        }
         AndroidUtilities.hideKeyboard(editText);
         animateTo(0f, () -> {
+            // если за это время успели снова show() — не гасим свежую панель
+            if (shown) {
+                return;
+            }
             setVisibility(GONE);
             loader = null;
             if (delegate != null) {
@@ -229,6 +320,7 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         if (animator != null) {
             animator.cancel();
         }
+        setTranslationX(0);
         final int height = getLayoutParams() != null && getLayoutParams().height > 0 ? getLayoutParams().height : dp(400);
         float startProgress = getVisibility() == VISIBLE && height > 0 ? 1f - getTranslationY() / height : 0f;
         if (target == 1f && getTranslationY() == 0 && getVisibility() == VISIBLE && startProgress >= 1f) {

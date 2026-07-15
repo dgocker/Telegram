@@ -85,11 +85,24 @@ public class FeedPageView extends FrameLayout {
     private final FrameLayout fullTextOverlay;
     private final TextView fullTextView;
 
+    private final FeedVideoSeekBar videoSeekBar;
+    private boolean seeking;
+
     private int bottomInset;
     private int topInset;
     private boolean fullTextShown;
     private boolean overlaysHiddenByTouch;
     private final Runnable restoreOverlaysRunnable = () -> setOverlaysHidden(false);
+
+    private final Runnable seekTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (videoSeekBar.getVisibility() == VISIBLE) {
+                videoSeekBar.invalidate();
+                AndroidUtilities.runOnUIThread(this, 200);
+            }
+        }
+    };
 
     public FeedPageView(Context context, int currentAccount) {
         super(context);
@@ -113,6 +126,7 @@ public class FeedPageView extends FrameLayout {
                         carouselPosition = position;
                         dotsIndicator.setSelected(position);
                         carouselAdapter.notifyItemRangeChanged(0, carouselAdapter.getItemCount());
+                        updateSeekBarVisibility();
                     }
                 }
             }
@@ -154,6 +168,42 @@ public class FeedPageView extends FrameLayout {
         // точки-индикатор карусели над панелью, по центру
         dotsIndicator = new DotsIndicator(context);
         bottomOverlay.addView(dotsIndicator, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, 16, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 8));
+
+        // полоса перемотки видео у нижнего края (над панелью канала)
+        videoSeekBar = new FeedVideoSeekBar(context);
+        videoSeekBar.setVisibility(GONE);
+        videoSeekBar.setDelegate(new FeedVideoSeekBar.Delegate() {
+            @Override
+            public int getDurationMs() {
+                AnimatedFileDrawable a = activeVideoAnim();
+                return a != null ? a.getDurationMs() : 0;
+            }
+
+            @Override
+            public int getProgressMs() {
+                AnimatedFileDrawable a = activeVideoAnim();
+                return a != null ? a.getCurrentProgressMs() : 0;
+            }
+
+            @Override
+            public void onSeek(int ms) {
+                AnimatedFileDrawable a = activeVideoAnim();
+                if (a != null) {
+                    a.seekTo(ms, true);
+                }
+            }
+
+            @Override
+            public void onDragStart() {
+                seeking = true;
+            }
+
+            @Override
+            public void onDragEnd() {
+                seeking = false;
+            }
+        });
+        addView(videoSeekBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 44, Gravity.BOTTOM));
 
         channelRow = new FrameLayout(context);
         bottomOverlay.addView(channelRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 0, 0, 0, 6));
@@ -311,8 +361,33 @@ public class FeedPageView extends FrameLayout {
         bottomInset = bottom;
         ((LayoutParams) bottomOverlay.getLayoutParams()).bottomMargin = bottom;
         ((LayoutParams) buttonsColumn.getLayoutParams()).bottomMargin = bottom + dp(4);
+        ((LayoutParams) videoSeekBar.getLayoutParams()).bottomMargin = bottom;
         fullTextView.setPadding(dp(18), topInset + dp(24), dp(18), bottom + dp(24));
         requestLayout();
+    }
+
+    private AnimatedFileDrawable activeVideoAnim() {
+        MediaItemView item = currentMediaItem();
+        return item != null ? item.getAnim() : null;
+    }
+
+    private MediaItemView currentMediaItem() {
+        if (carousel == null) {
+            return null;
+        }
+        RecyclerView.ViewHolder holder = carousel.findViewHolderForAdapterPosition(carouselPosition);
+        return holder != null && holder.itemView instanceof MediaItemView ? (MediaItemView) holder.itemView : null;
+    }
+
+    private void updateSeekBarVisibility() {
+        boolean showBar = active && !mediaMessages.isEmpty()
+            && carouselPosition < mediaMessages.size()
+            && mediaMessages.get(carouselPosition).isVideo();
+        videoSeekBar.setVisibility(showBar ? VISIBLE : GONE);
+        AndroidUtilities.cancelRunOnUIThread(seekTicker);
+        if (showBar) {
+            AndroidUtilities.runOnUIThread(seekTicker, 200);
+        }
     }
 
     public void setPost(FeedController.FeedPost newPost) {
@@ -321,14 +396,21 @@ public class FeedPageView extends FrameLayout {
         fullTextShown = false;
         fullTextOverlay.setVisibility(GONE);
         applyBlur(false);
-        setOverlaysHidden(false);
+        overlaysHiddenByTouch = false;
+        AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
+        // полный сброс состояния переиспользуемой view: канал и оверлеи должны быть
+        // видны всегда, даже если на прошлом посте был открыт полный текст/шторка
+        bottomOverlay.setVisibility(VISIBLE);
+        bottomOverlay.setAlpha(1f);
+        summaryTextView.setAlpha(1f);
+        buttonsColumn.setVisibility(VISIBLE);
+        buttonsColumn.setAlpha(1f);
+        dotsIndicator.setAlpha(1f);
+        mediaContainer.setScaleX(1f);
+        mediaContainer.setScaleY(1f);
 
         mediaMessages.clear();
-        if (post.album != null) {
-            mediaMessages.addAll(post.album);
-        } else if (post.message.photoThumbs != null && !post.message.photoThumbs.isEmpty()) {
-            mediaMessages.add(post.message);
-        }
+        mediaMessages.addAll(post.renderableMedia());
 
         // комментарии доступны только у постов с привязанной discussion-группой
         TLRPC.MessageReplies replies = post.message.messageOwner.replies;
@@ -365,6 +447,7 @@ public class FeedPageView extends FrameLayout {
         dotsIndicator.setSelected(0);
         carouselAdapter.notifyDataSetChanged();
         carousel.scrollToPosition(0);
+        updateSeekBarVisibility();
     }
 
     public FeedController.FeedPost getPost() {
@@ -401,6 +484,20 @@ public class FeedPageView extends FrameLayout {
         }
         active = value;
         carouselAdapter.notifyItemRangeChanged(0, carouselAdapter.getItemCount());
+        updateSeekBarVisibility();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        AndroidUtilities.cancelRunOnUIThread(seekTicker);
+        AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        updateSeekBarVisibility();
     }
 
     public boolean canCarouselScroll() {
@@ -484,6 +581,9 @@ public class FeedPageView extends FrameLayout {
         private Drawable playDrawable;
         private boolean showPlay;
 
+        private boolean isVideoItem;
+        private boolean manuallyPaused;
+
         public MediaItemView(Context context) {
             super(context);
             imageView = new BackupImageView(context);
@@ -492,21 +592,49 @@ public class FeedPageView extends FrameLayout {
             setOnClickListener(v -> {
                 if (fullTextShown) {
                     setFullTextShown(false);
-                } else if (overlaysHiddenByTouch) {
+                    return;
+                }
+                if (overlaysHiddenByTouch) {
                     AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
                     setOverlaysHidden(false);
-                } else if (!TextUtils.isEmpty(post != null ? post.getText() : null)) {
-                    setFullTextShown(true);
+                    return;
+                }
+                // тап по видео — пауза/воспроизведение (полный текст только по тапу на текст)
+                if (isVideoItem) {
+                    togglePlayback();
                 }
             });
             setWillNotDraw(false);
         }
 
+        private AnimatedFileDrawable getAnim() {
+            return imageView.getImageReceiver().getAnimation();
+        }
+
+        private void togglePlayback() {
+            AnimatedFileDrawable anim = getAnim();
+            if (anim == null) {
+                return;
+            }
+            if (anim.isRunning()) {
+                anim.stop();
+                manuallyPaused = true;
+                showPlay = true;
+            } else {
+                anim.start();
+                manuallyPaused = false;
+                showPlay = false;
+            }
+            invalidate();
+        }
+
         public void bind(MessageObject messageObject, boolean playing) {
             TLRPC.Document document = messageObject.getDocument();
             boolean isVideo = messageObject.isVideo();
+            isVideoItem = isVideo && playing && document != null;
+            manuallyPaused = false;
             showPlay = isVideo && !playing;
-            if (showPlay && playDrawable == null) {
+            if ((showPlay || isVideo) && playDrawable == null) {
                 playDrawable = ContextCompat.getDrawable(getContext(), R.drawable.play_mini_video).mutate();
             }
             // полный размер: фото — максимально доступный размер, видео — автоплей потоком

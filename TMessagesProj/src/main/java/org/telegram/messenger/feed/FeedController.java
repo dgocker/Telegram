@@ -72,6 +72,23 @@ public class FeedController extends BaseController {
             return message.getId();
         }
 
+        /** Медиа, которые реально можно показать в ленте (фото/видео с превью). */
+        public ArrayList<MessageObject> renderableMedia() {
+            ArrayList<MessageObject> result = new ArrayList<>();
+            ArrayList<MessageObject> source = album != null ? album : new ArrayList<>(Collections.singletonList(message));
+            for (int i = 0; i < source.size(); i++) {
+                MessageObject mo = source.get(i);
+                if (mo.isVideo() || mo.isPhoto() || (mo.photoThumbs != null && !mo.photoThumbs.isEmpty())) {
+                    result.add(mo);
+                }
+            }
+            return result;
+        }
+
+        public boolean hasMedia() {
+            return !renderableMedia().isEmpty();
+        }
+
         public String getText() {
             if (!TextUtils.isEmpty(message.messageOwner.message)) {
                 return message.messageOwner.message;
@@ -250,8 +267,9 @@ public class FeedController extends BaseController {
                     group.calculate();
                     post.groupedMessages = group;
                 }
-                // пустые посты (ни текста, ни медиа) не показываем
-                if (TextUtils.isEmpty(post.getText()) && post.message.messageOwner.media == null) {
+                // пустые/непоказываемые посты (нет текста И нечего показать из медиа —
+                // например ссылка без картинки, опрос) в ленту не пускаем
+                if (TextUtils.isEmpty(post.getText()) && !post.hasMedia()) {
                     post.score = Float.NEGATIVE_INFINITY;
                     continue;
                 }

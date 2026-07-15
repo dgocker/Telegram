@@ -92,6 +92,9 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         getNotificationCenter().removeObserver(this, NotificationCenter.smartFeedDidLoad);
         getNotificationCenter().removeObserver(this, NotificationCenter.dialogsNeedReload);
         clearPrefetch();
+        if (commentsPanel != null) {
+            commentsPanel.onDestroy(); // остановить живой опрос комментов
+        }
         super.onFragmentDestroy();
     }
 
