@@ -2025,6 +2025,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public int sendMessage(ArrayList<MessageObject> messages, final long peer, boolean forwardFromMyName, boolean hideCaption, boolean notify, int scheduleDate, long payStars) {
+        if (messages != null && !messages.isEmpty()) {
+            org.telegram.messenger.feed.FeedController.getInstance(currentAccount).trackInteraction(messages.get(0).getDialogId(), org.telegram.messenger.feed.FeedController.INTERACTION_FORWARD);
+        }
         return sendMessage(messages, peer, forwardFromMyName, hideCaption, notify, scheduleDate, null, -1, payStars);
     }
 
@@ -3629,6 +3632,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messageObject == null || parentFragment == null) {
             return;
         }
+        org.telegram.messenger.feed.FeedController.getInstance(currentAccount).trackInteraction(messageObject.getDialogId(), org.telegram.messenger.feed.FeedController.INTERACTION_REACTION);
         TLRPC.TL_messages_sendReaction req = new TLRPC.TL_messages_sendReaction();
         if (messageObject.messageOwner.isThreadMessage && messageObject.messageOwner.fwd_from != null) {
             req.peer = getMessagesController().getInputPeer(messageObject.getFromChatId());

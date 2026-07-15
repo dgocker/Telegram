@@ -671,6 +671,8 @@ public class ChatActivity extends BaseFragment implements
 
     public String quickReplyShortcut;
     private int chatMode;
+    private boolean smartFeedOpenTracked;
+    private long smartFeedResumeTime;
     private int scheduledMessagesCount = -1;
     public boolean isSubscriberSuggestions;
 
@@ -29508,6 +29510,13 @@ public class ChatActivity extends BaseFragment implements
         super.onResume();
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
+        if (chatMode == 0 && threadMessageId == 0 && ChatObject.isChannelAndNotMegaGroup(currentChat)) {
+            smartFeedResumeTime = System.currentTimeMillis();
+            if (!smartFeedOpenTracked) {
+                smartFeedOpenTracked = true;
+                org.telegram.messenger.feed.FeedController.getInstance(currentAccount).trackInteraction(dialog_id, org.telegram.messenger.feed.FeedController.INTERACTION_OPEN);
+            }
+        }
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
             ImportingAlert alert = new ImportingAlert(getParentActivity(), null, this, themeDelegate);
             alert.setOnHideListener(dialog -> {
@@ -29706,6 +29715,10 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onPause() {
         super.onPause();
+        if (smartFeedResumeTime > 0) {
+            org.telegram.messenger.feed.FeedController.getInstance(currentAccount).trackReadTime(dialog_id, System.currentTimeMillis() - smartFeedResumeTime);
+            smartFeedResumeTime = 0;
+        }
         scrolling = false;
         if (scrimPopupWindow != null) {
             scrimPopupWindow.setPauseNotifications(false);

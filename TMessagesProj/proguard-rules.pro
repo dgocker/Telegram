@@ -114,3 +114,6 @@
 # Use -keep to explicitly keep any other classes shrinking would remove
 -dontoptimize
 -dontobfuscate
+# ONNX Runtime + extensions: классы дергаются из JNI по именам
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

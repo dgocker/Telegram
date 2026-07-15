@@ -263,4 +263,24 @@
     <string name="RemindTodayAt">\'Отправить сегодня в\' HH:mm</string>
     <string name="RemindDayAt">\'Отправить\' d MMM \'в\' HH:mm</string>
     <string name="RemindDayYearAt">\'Напомнить\' d MMM yyyy \'в\' HH:mm</string>
+    <string name="MainTabsFeed">Лента</string>
+    <string name="SmartFeedNoPosts">В ваших каналах пока нет свежих постов</string>
+    <string name="SmartFeedModelBanner">Скачать AI-модель для выжимок постов</string>
+    <string name="SmartFeedModelTitle">AI-выжимки</string>
+    <string name="SmartFeedModelText">Чтобы делать выжимки постов прямо на устройстве, нужно скачать модель (%1$s). На медленном соединении загрузка может занять время.</string>
+    <string name="SmartFeedModelDownload">Скачать</string>
+    <string name="SmartFeedDownloading">Скачивание AI-модели…</string>
+    <string name="SmartFeedDownloadFailed">Не удалось скачать модель. Попробуйте ещё раз.</string>
+    <string name="SmartFeedSummarizing">Генерация выжимки…</string>
+    <string name="SmartFeedSummaryUnavailable">AI-выжимка появится после загрузки модели</string>
+    <string name="SmartFeedSummaryLength">Длина выжимки</string>
+    <string name="SmartFeedSummaryLengthInfo">Насколько сильно AI сжимает длинные посты во вкладке «Лента».</string>
+    <string name="SmartFeedSummaryShort">Коротко</string>
+    <string name="SmartFeedSummaryMedium">Средне</string>
+    <string name="SmartFeedSummaryDetailed">Подробно</string>
+    <string name="SmartFeedComments">Комментарии</string>
+    <string name="SmartFeedNoComments">Комментариев пока нет</string>
+    <string name="SmartFeedCommentsUnavailable">Комментарии недоступны для этого канала</string>
+    <string name="SmartFeedCommentHint">Комментарий…</string>
+    <string name="SmartFeedViews">%1$s просмотров</string>
 </resources>

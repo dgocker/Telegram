@@ -94,7 +94,7 @@ android {
     productFlavors {
         afat {
             ndk {
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                abiFilters "arm64-v8a"
             }
             ext {
                 abiVersionCode = 9
@@ -122,7 +122,7 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 21
+        minSdkVersion 24
         targetSdkVersion 35
         versionName APP_VERSION_NAME
         ndkVersion "27.2.12479018"
@@ -149,4 +149,6 @@ android {
     }
 }
 
-apply plugin: 'com.google.gms.google-services'
+// google-services отключён: после смены APP_PACKAGE имя пакета не совпадает
+// с клиентами в google-services.json и сборка падает; Firebase push не нужен.
+// apply plugin: 'com.google.gms.google-services'

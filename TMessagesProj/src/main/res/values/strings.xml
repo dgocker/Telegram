@@ -10904,4 +10904,24 @@
     <string name="WearAuthText">Connect your account to WatchOS device\nto use it separately from your watch.</string>
     <string name="WearAuthEmojis">Compare emojis on your watch</string>
     <string name="WearAuthEmojisLogIn">Log In</string>
+    <string name="MainTabsFeed">Feed</string>
+    <string name="SmartFeedNoPosts">No recent posts from your channels</string>
+    <string name="SmartFeedModelBanner">Download AI model for post summaries</string>
+    <string name="SmartFeedModelTitle">AI Summaries</string>
+    <string name="SmartFeedModelText">To generate post summaries on this device, the app needs to download a model (%1$s). The download may take a while on a slow connection.</string>
+    <string name="SmartFeedModelDownload">Download</string>
+    <string name="SmartFeedDownloading">Downloading AI model…</string>
+    <string name="SmartFeedDownloadFailed">Failed to download the model. Please try again.</string>
+    <string name="SmartFeedSummarizing">Generating summary…</string>
+    <string name="SmartFeedSummaryUnavailable">AI summary will appear after the model is downloaded</string>
+    <string name="SmartFeedSummaryLength">Summary length</string>
+    <string name="SmartFeedSummaryLengthInfo">How much AI compresses long posts in the Feed tab.</string>
+    <string name="SmartFeedSummaryShort">Short</string>
+    <string name="SmartFeedSummaryMedium">Medium</string>
+    <string name="SmartFeedSummaryDetailed">Detailed</string>
+    <string name="SmartFeedComments">Comments</string>
+    <string name="SmartFeedNoComments">No comments yet</string>
+    <string name="SmartFeedCommentsUnavailable">Comments are not available for this channel</string>
+    <string name="SmartFeedCommentHint">Comment…</string>
+    <string name="SmartFeedViews">%1$s views</string>
 </resources>
