@@ -65,6 +65,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private FeedCommentsPanel commentsPanel;
     private View commentsScrim;
     private android.widget.ImageView historyButton;
+    private FeedPageView shrinkTarget;
 
 
     private int currentPage = -1;
@@ -153,6 +154,11 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         commentsScrim = new View(context);
         commentsScrim.setVisibility(View.GONE);
         final android.view.GestureDetector scrimGestures = new android.view.GestureDetector(context, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDown(MotionEvent e) {
+                return true; // иначе View не получит UP и onSingleTapUp не сработает
+            }
+
             @Override
             public boolean onSingleTapUp(MotionEvent e) {
                 if (commentsPanel != null) {
@@ -323,6 +329,9 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         FeedPageView page = findPageView(position);
         if (page != null) {
             page.setActive(active);
+            if (active) {
+                page.resetShrink(); // страховка от застрявшего сжатия шторки
+            }
         }
     }
 
@@ -536,9 +545,10 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
 
     @Override
     public void onShrinkProgress(float progress, int panelHeight) {
-        FeedPageView page = findPageView(currentPage);
-        if (page != null) {
-            page.setCommentsShrink(progress, panelHeight);
+        // держим прямую ссылку на сжимаемую страницу, а не ищем по currentPage
+        // (после reload currentPage=-1 и медиа осталось бы сжатым — баг с мелкой картинкой)
+        if (shrinkTarget != null) {
+            shrinkTarget.setCommentsShrink(progress, panelHeight);
         }
     }
 
@@ -553,14 +563,16 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         if (historyButton != null) {
             historyButton.setVisibility(View.VISIBLE);
         }
-        FeedPageView page = findPageView(currentPage);
-        if (page != null) {
-            page.setCommentsShrink(0f, 0);
+        if (shrinkTarget != null) {
+            shrinkTarget.setCommentsShrink(0f, 0);
+            shrinkTarget.resetShrink();
+            shrinkTarget = null;
         }
     }
 
     @Override
     public void onCommentsOpened(FeedController.FeedPost post) {
+        shrinkTarget = findPageView(currentPage);
         if (commentsScrim != null) {
             commentsScrim.setVisibility(View.VISIBLE);
         }

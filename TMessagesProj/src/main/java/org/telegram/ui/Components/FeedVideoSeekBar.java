@@ -78,6 +78,10 @@ public class FeedVideoSeekBar extends View {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 dragging = true;
+                // не отдавать горизонтальный жест ViewPager табов (иначе листает на соседний таб)
+                if (getParent() != null) {
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                }
                 dragProgress = MathUtils.clamp((event.getX() - pad) / usable, 0f, 1f);
                 delegate.onDragStart();
                 invalidate();

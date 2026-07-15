@@ -83,10 +83,14 @@ public class FeedPageView extends FrameLayout {
     private TextView commentsCountView;
     private boolean commentsEnabled;
     private final FrameLayout fullTextOverlay;
-    private final TextView fullTextView;
+    private final LinkSpanTextView fullTextView;
 
     private final FeedVideoSeekBar videoSeekBar;
     private boolean seeking;
+    private VideoPlayer videoPlayer;
+    private MediaItemView videoItem;
+    private MessageObject videoPlayerMessage;
+    private boolean manuallyPaused;
 
     private int bottomInset;
     private int topInset;
@@ -115,6 +119,7 @@ public class FeedPageView extends FrameLayout {
         carousel = new RecyclerView(context);
         carousel.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false));
         carousel.setAdapter(carouselAdapter);
+        carousel.setItemAnimator(null);
         new PagerSnapHelper().attachToRecyclerView(carousel);
         carousel.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
@@ -125,8 +130,7 @@ public class FeedPageView extends FrameLayout {
                     if (position >= 0 && position != carouselPosition) {
                         carouselPosition = position;
                         dotsIndicator.setSelected(position);
-                        carouselAdapter.notifyItemRangeChanged(0, carouselAdapter.getItemCount());
-                        updateSeekBarVisibility();
+                        updateActiveVideo();
                     }
                 }
             }
@@ -175,21 +179,18 @@ public class FeedPageView extends FrameLayout {
         videoSeekBar.setDelegate(new FeedVideoSeekBar.Delegate() {
             @Override
             public int getDurationMs() {
-                AnimatedFileDrawable a = activeVideoAnim();
-                return a != null ? a.getDurationMs() : 0;
+                return videoPlayer != null ? (int) videoPlayer.getDuration() : 0;
             }
 
             @Override
             public int getProgressMs() {
-                AnimatedFileDrawable a = activeVideoAnim();
-                return a != null ? a.getCurrentProgressMs() : 0;
+                return videoPlayer != null ? (int) videoPlayer.getCurrentPosition() : 0;
             }
 
             @Override
             public void onSeek(int ms) {
-                AnimatedFileDrawable a = activeVideoAnim();
-                if (a != null) {
-                    a.seekTo(ms, true);
+                if (videoPlayer != null) {
+                    videoPlayer.seekTo(ms, true);
                 }
             }
 
@@ -258,9 +259,10 @@ public class FeedPageView extends FrameLayout {
         scrollView.setFillViewport(true);
         FrameLayout centerWrapper = new FrameLayout(context);
         centerWrapper.setOnClickListener(v -> setFullTextShown(false));
-        fullTextView = new TextView(context);
+        fullTextView = new LinkSpanTextView(context);
         fullTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         fullTextView.setTextColor(Color.WHITE);
+        fullTextView.setLinkTextColor(0xFF64B5F6); // ссылки синим
         fullTextView.setLineSpacing(dp(3), 1f);
         fullTextView.setGravity(Gravity.CENTER);
         fullTextView.setPadding(dp(18), dp(24), dp(18), dp(24));
@@ -366,11 +368,6 @@ public class FeedPageView extends FrameLayout {
         requestLayout();
     }
 
-    private AnimatedFileDrawable activeVideoAnim() {
-        MediaItemView item = currentMediaItem();
-        return item != null ? item.getAnim() : null;
-    }
-
     private MediaItemView currentMediaItem() {
         if (carousel == null) {
             return null;
@@ -379,10 +376,116 @@ public class FeedPageView extends FrameLayout {
         return holder != null && holder.itemView instanceof MediaItemView ? (MediaItemView) holder.itemView : null;
     }
 
-    private void updateSeekBarVisibility() {
-        boolean showBar = active && !mediaMessages.isEmpty()
+    private boolean currentItemIsVideo() {
+        return !mediaMessages.isEmpty()
             && carouselPosition < mediaMessages.size()
             && mediaMessages.get(carouselPosition).isVideo();
+    }
+
+    /* Видео через VideoPlayer (ExoPlayer): надёжный автостарт/пауза/резюм/seek со стримингом */
+
+    private void updateActiveVideo() {
+        MediaItemView item = active ? currentMediaItem() : null;
+        boolean wantVideo = item != null && currentItemIsVideo();
+        if (!wantVideo) {
+            releaseVideo();
+            updateSeekBarVisibility();
+            return;
+        }
+        MessageObject messageObject = mediaMessages.get(carouselPosition);
+        if (videoPlayer != null && videoPlayerMessage == messageObject && videoItem == item) {
+            return; // уже играет нужное
+        }
+        releaseVideo();
+        videoItem = item;
+        videoPlayerMessage = messageObject;
+        manuallyPaused = false;
+        final MediaItemView boundItem = item;
+
+        try {
+            TLRPC.Document document = messageObject.getDocument();
+            android.net.Uri uri = org.telegram.messenger.FileStreamLoadOperation.prepareUri(currentAccount, document, messageObject);
+            if (uri == null) {
+                return;
+            }
+            org.telegram.messenger.FileStreamLoadOperation.setPriorityForDocument(document, FileLoader.PRIORITY_HIGH);
+            FileLoader.getInstance(currentAccount).changePriority(FileLoader.PRIORITY_HIGH, document, null, null, null, null, null);
+
+            videoPlayer = new VideoPlayer(false, false);
+            videoPlayer.setLooping(true);
+            videoPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+                @Override
+                public void onStateChanged(boolean playWhenReady, int playbackState) {
+                    videoSeekBar.invalidate();
+                }
+
+                @Override
+                public void onError(VideoPlayer player, Exception e) {}
+
+                @Override
+                public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {}
+
+                @Override
+                public void onRenderedFirstFrame() {
+                    // сверяемся с текущим item — колбэк мог прийти после смены поста
+                    if (videoItem == boundItem) {
+                        boundItem.onVideoRendered();
+                    }
+                }
+
+                @Override
+                public void onSurfaceTextureUpdated(android.graphics.SurfaceTexture surfaceTexture) {}
+
+                @Override
+                public boolean onSurfaceDestroyed(android.graphics.SurfaceTexture surfaceTexture) {
+                    return false;
+                }
+            });
+            videoPlayer.setTextureView(item.ensureTextureView());
+            videoPlayer.preparePlayer(uri, "other", FileLoader.PRIORITY_HIGH, 0);
+            videoPlayer.setMute(false);
+            videoPlayer.play();
+        } catch (Throwable e) {
+            org.telegram.messenger.FileLog.e(e);
+            releaseVideo();
+        }
+        updateSeekBarVisibility();
+    }
+
+    private void releaseVideo() {
+        if (videoPlayer != null) {
+            try {
+                videoPlayer.releasePlayer(true);
+            } catch (Throwable ignore) {}
+            videoPlayer = null;
+        }
+        if (videoItem != null) {
+            videoItem.onVideoReleased();
+            videoItem = null;
+        }
+        videoPlayerMessage = null;
+        videoSeekBar.setVisibility(GONE);
+        AndroidUtilities.cancelRunOnUIThread(seekTicker);
+    }
+
+    private void toggleVideoPlayback() {
+        if (videoPlayer == null) {
+            return;
+        }
+        if (videoPlayer.isPlaying()) {
+            videoPlayer.pause();
+            manuallyPaused = true;
+        } else {
+            videoPlayer.play();
+            manuallyPaused = false;
+        }
+        if (videoItem != null) {
+            videoItem.setShowPlay(manuallyPaused);
+        }
+    }
+
+    private void updateSeekBarVisibility() {
+        boolean showBar = active && currentItemIsVideo() && videoPlayer != null;
         videoSeekBar.setVisibility(showBar ? VISIBLE : GONE);
         AndroidUtilities.cancelRunOnUIThread(seekTicker);
         if (showBar) {
@@ -447,7 +550,7 @@ public class FeedPageView extends FrameLayout {
         dotsIndicator.setSelected(0);
         carouselAdapter.notifyDataSetChanged();
         carousel.scrollToPosition(0);
-        updateSeekBarVisibility();
+        updateActiveVideo();
     }
 
     public FeedController.FeedPost getPost() {
@@ -483,8 +586,7 @@ public class FeedPageView extends FrameLayout {
             return;
         }
         active = value;
-        carouselAdapter.notifyItemRangeChanged(0, carouselAdapter.getItemCount());
-        updateSeekBarVisibility();
+        updateActiveVideo();
     }
 
     @Override
@@ -492,12 +594,25 @@ public class FeedPageView extends FrameLayout {
         super.onDetachedFromWindow();
         AndroidUtilities.cancelRunOnUIThread(seekTicker);
         AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
+        releaseVideo();
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        updateSeekBarVisibility();
+        updateActiveVideo();
+    }
+
+    /** Страховка: сброс возможного застрявшего сжатия (оверлеи/масштаб) при показе поста. */
+    public void resetShrink() {
+        mediaContainer.setScaleX(1f);
+        mediaContainer.setScaleY(1f);
+        bottomOverlay.setAlpha(1f);
+        bottomOverlay.setVisibility(VISIBLE);
+        buttonsColumn.setAlpha(1f);
+        buttonsColumn.setVisibility(VISIBLE);
+        dotsIndicator.setAlpha(1f);
+        centerTextView.setAlpha(1f);
     }
 
     public boolean canCarouselScroll() {
@@ -570,19 +685,22 @@ public class FeedPageView extends FrameLayout {
 
         @Override
         public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
-            boolean playing = active && position == carouselPosition;
-            ((MediaItemView) holder.itemView).bind(mediaMessages.get(position), playing);
+            ((MediaItemView) holder.itemView).bind(mediaMessages.get(position));
+            // активный видео-холдер мог забиндиться уже после первого updateActiveVideo
+            // (карусель не была разложена) — до-запускаем, когда он готов
+            if (active && position == carouselPosition && mediaMessages.get(position).isVideo()) {
+                AndroidUtilities.runOnUIThread(FeedPageView.this::updateActiveVideo);
+            }
         }
     }
 
     private class MediaItemView extends FrameLayout {
 
-        private final BackupImageView imageView;
+        private final BackupImageView imageView; // постер (кадр-превью)
+        private android.view.TextureView textureView;
         private Drawable playDrawable;
         private boolean showPlay;
-
-        private boolean isVideoItem;
-        private boolean manuallyPaused;
+        private boolean isVideo;
 
         public MediaItemView(Context context) {
             super(context);
@@ -600,68 +718,79 @@ public class FeedPageView extends FrameLayout {
                     return;
                 }
                 // тап по видео — пауза/воспроизведение (полный текст только по тапу на текст)
-                if (isVideoItem) {
-                    togglePlayback();
+                if (isVideo && videoItem == this) {
+                    toggleVideoPlayback();
                 }
             });
             setWillNotDraw(false);
         }
 
-        private AnimatedFileDrawable getAnim() {
-            return imageView.getImageReceiver().getAnimation();
+        android.view.TextureView ensureTextureView() {
+            if (textureView == null) {
+                textureView = new android.view.TextureView(getContext());
+                addView(textureView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+            }
+            textureView.setVisibility(VISIBLE);
+            textureView.setAlpha(0f); // покажем по первому кадру, чтобы не мигало чёрным
+            showPlay = false;
+            invalidate();
+            return textureView;
         }
 
-        private void togglePlayback() {
-            AnimatedFileDrawable anim = getAnim();
-            if (anim == null) {
-                return;
+        void onVideoRendered() {
+            if (textureView != null) {
+                textureView.setVisibility(VISIBLE);
+                textureView.animate().alpha(1f).setDuration(150).start();
             }
-            if (anim.isRunning()) {
-                anim.stop();
-                manuallyPaused = true;
-                showPlay = true;
-            } else {
-                anim.start();
-                manuallyPaused = false;
-                showPlay = false;
-            }
+            showPlay = false;
             invalidate();
         }
 
-        public void bind(MessageObject messageObject, boolean playing) {
-            TLRPC.Document document = messageObject.getDocument();
-            boolean isVideo = messageObject.isVideo();
-            isVideoItem = isVideo && playing && document != null;
-            manuallyPaused = false;
-            showPlay = isVideo && !playing;
-            if ((showPlay || isVideo) && playDrawable == null) {
+        void onVideoReleased() {
+            if (textureView != null) {
+                textureView.setAlpha(0f);
+                textureView.setVisibility(GONE);
+            }
+            showPlay = isVideo;
+            invalidate();
+        }
+
+        void setShowPlay(boolean value) {
+            showPlay = value;
+            invalidate();
+        }
+
+        public void bind(MessageObject messageObject) {
+            // активный играющий item не трогаем — иначе спрячем живое видео под постер
+            if (videoItem == this) {
+                return;
+            }
+            isVideo = messageObject.isVideo();
+            showPlay = isVideo; // постер видео показывает play, пока плеер не отрисует кадр
+            if (isVideo && playDrawable == null) {
                 playDrawable = ContextCompat.getDrawable(getContext(), R.drawable.play_mini_video).mutate();
             }
-            // полный размер: фото — максимально доступный размер, видео — автоплей потоком
+            if (textureView != null) {
+                textureView.setAlpha(0f);
+                textureView.setVisibility(GONE);
+            }
+            // постер: полноразмерный кадр (для фото — само фото)
             TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, AndroidUtilities.getPhotoSize());
             TLRPC.PhotoSize thumbSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, 50);
             if (thumbSize == photoSize) {
                 thumbSize = null;
             }
-            if (isVideo && playing && document != null) {
-                imageView.getImageReceiver().setAllowStartAnimation(true);
-                imageView.getImageReceiver().setImage(
-                    ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER,
-                    ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), null,
-                    ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
-                    null, document.size, null, messageObject, 0);
-            } else {
-                imageView.getImageReceiver().setImage(
-                    ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), null,
-                    ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
-                    photoSize != null ? photoSize.size : 0, null, messageObject, 1);
-            }
+            imageView.getImageReceiver().setImage(
+                ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), null,
+                ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
+                photoSize != null ? photoSize.size : 0, null, messageObject, 1);
             invalidate();
         }
 
         @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
+        protected void dispatchDraw(Canvas canvas) {
+            super.dispatchDraw(canvas);
+            // play-иконка поверх постера/видео
             if (showPlay && playDrawable != null) {
                 final int w = playDrawable.getIntrinsicWidth();
                 final int h = playDrawable.getIntrinsicHeight();

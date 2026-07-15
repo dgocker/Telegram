@@ -195,15 +195,12 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
                 }
                 if (dragging) {
                     int height = getHeight() > 0 ? getHeight() : dp(400);
-                    if (horizontalDrag) {
-                        setTranslationX(Math.max(0, dx));
+                    // и вертикальный, и горизонтальный жест уводят панель ВНИЗ
+                    float down = horizontalDrag ? Math.max(0, dx) : dy;
+                    if (down > 0) {
+                        setTranslationY(down);
                         if (delegate != null) {
-                            delegate.onShrinkProgress(Math.max(0f, 1f - Math.max(0, dx) / getWidth()), height);
-                        }
-                    } else if (dy > 0) {
-                        setTranslationY(dy);
-                        if (delegate != null) {
-                            delegate.onShrinkProgress(Math.max(0f, 1f - dy / height), height);
+                            delegate.onShrinkProgress(Math.max(0f, 1f - down / height), height);
                         }
                     }
                     return true;
@@ -215,11 +212,11 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
                 if (dragging) {
                     float dx = e.getRawX() - dragStartX;
                     float dy = e.getRawY() - dragStartY;
-                    boolean dismiss = horizontalDrag ? dx > getWidth() * 0.3f : dy > getHeight() * 0.22f;
+                    float down = horizontalDrag ? Math.max(0, dx) : dy;
+                    boolean dismiss = horizontalDrag ? dx > getWidth() * 0.28f : down > getHeight() * 0.22f;
                     if (dismiss) {
                         hide();
                     } else {
-                        setTranslationX(0);
                         animateTo(1f, null);
                     }
                 }
