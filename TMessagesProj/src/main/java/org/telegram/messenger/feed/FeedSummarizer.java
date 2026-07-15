@@ -120,7 +120,8 @@ public class FeedSummarizer {
     private final HashMap<String, String> memoryCache = new HashMap<>();
 
     private static SharedPreferences getCachePrefs() {
-        return ApplicationLoader.applicationContext.getSharedPreferences("feed_summaries", 0);
+        // v2: после смены декодинга старые (искажённые) выжимки должны перегенериться
+        return ApplicationLoader.applicationContext.getSharedPreferences("feed_summaries2", 0);
     }
 
     public String getCached(long dialogId, int messageId) {
@@ -307,7 +308,8 @@ public class FeedSummarizer {
 
     private String decodeGreedy(OnnxTensor encoderHiddenState, OnnxTensor encoderAttnMask, int minNewTokens, int maxNewTokens) throws Exception {
         final java.util.ArrayList<Long> generated = new java.util.ArrayList<>();
-        final HashSet<Long> seenTokens = new HashSet<>();
+        // блокировка повторов 4-грамм: ключ — последние 3 токена, значение — 4-е, которые уже встречались
+        final HashMap<Long, HashSet<Integer>> seenNgrams = new HashMap<>();
 
         OrtSession.Result prefillResult = null;
         OrtSession.Result prevResult = null;
@@ -348,14 +350,25 @@ public class FeedSummarizer {
                     float[][][] logits = (float[][][]) ((OnnxValue) result.get("logits").get()).getValue();
                     float[] last = logits[0][logits[0].length - 1];
 
-                    // лёгкий штраф за повторы, чтобы greedy не зацикливался
-                    for (long seen : seenTokens) {
-                        int idx = (int) seen;
+                    // мягкий штраф только по недавнему окну — глобальный штраф
+                    // на длинной генерации уводит модель от смысла оригинала
+                    final int window = Math.min(24, generated.size());
+                    for (int w = generated.size() - window; w < generated.size(); w++) {
+                        int idx = generated.get(w).intValue();
                         if (idx >= 0 && idx < last.length) {
                             if (last[idx] > 0) {
-                                last[idx] /= 1.3f;
+                                last[idx] /= 1.12f;
                             } else {
-                                last[idx] *= 1.3f;
+                                last[idx] *= 1.12f;
+                            }
+                        }
+                    }
+                    // запрет повтора 4-грамм — основная защита от зацикливания
+                    if (generated.size() >= 3) {
+                        HashSet<Integer> banned = seenNgrams.get(ngramKey(generated, generated.size()));
+                        if (banned != null) {
+                            for (int idx : banned) {
+                                last[idx] = Float.NEGATIVE_INFINITY;
                             }
                         }
                     }
@@ -375,7 +388,14 @@ public class FeedSummarizer {
                         break;
                     }
                     generated.add((long) best);
-                    seenTokens.add((long) best);
+                    if (generated.size() >= 4) {
+                        Long key = ngramKey(generated, generated.size() - 1);
+                        HashSet<Integer> set = seenNgrams.get(key);
+                        if (set == null) {
+                            seenNgrams.put(key, set = new HashSet<>());
+                        }
+                        set.add(best);
+                    }
                     nextToken = best;
                 }
             }
@@ -395,7 +415,38 @@ public class FeedSummarizer {
         for (int i = 0; i < ids.length; i++) {
             ids[i] = generated.get(i);
         }
-        return detokenize(ids);
+        return trimToSentence(detokenize(ids));
+    }
+
+    private static Long ngramKey(java.util.ArrayList<Long> tokens, int end) {
+        long key = tokens.get(end - 3);
+        key = key * 30000 + tokens.get(end - 2);
+        key = key * 30000 + tokens.get(end - 1);
+        return key;
+    }
+
+    /** Если генерация упёрлась в лимит посреди фразы — обрезаем по последнему концу предложения. */
+    private static String trimToSentence(String text) {
+        if (text == null) {
+            return null;
+        }
+        char lastChar = text.isEmpty() ? ' ' : text.charAt(text.length() - 1);
+        if (lastChar == '.' || lastChar == '!' || lastChar == '?' || lastChar == '…') {
+            return text;
+        }
+        int cut = -1;
+        for (int i = text.length() - 1; i >= 0; i--) {
+            char c = text.charAt(i);
+            if (c == '.' || c == '!' || c == '?' || c == '…') {
+                cut = i;
+                break;
+            }
+        }
+        // не режем, если потеряли бы больше трети текста — лучше многоточие
+        if (cut < text.length() * 2 / 3) {
+            return text + "…";
+        }
+        return text.substring(0, cut + 1);
     }
 
     private long[] tokenize(String text) throws Exception {

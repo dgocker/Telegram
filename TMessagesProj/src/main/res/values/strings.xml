@@ -10924,4 +10924,5 @@
     <string name="SmartFeedCommentsUnavailable">Comments are not available for this channel</string>
     <string name="SmartFeedCommentHint">Comment…</string>
     <string name="SmartFeedViews">%1$s views</string>
+    <string name="SmartFeedDisliked">Channel will appear less often</string>
 </resources>

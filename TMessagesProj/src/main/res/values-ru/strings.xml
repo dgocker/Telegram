@@ -283,4 +283,5 @@
     <string name="SmartFeedCommentsUnavailable">Комментарии недоступны для этого канала</string>
     <string name="SmartFeedCommentHint">Комментарий…</string>
     <string name="SmartFeedViews">%1$s просмотров</string>
+    <string name="SmartFeedDisliked">Канал будет показываться реже</string>
 </resources>

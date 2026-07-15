@@ -28,6 +28,9 @@ public class FeedController extends BaseController {
     public static final int INTERACTION_OPEN = 0;
     public static final int INTERACTION_REACTION = 1;
     public static final int INTERACTION_FORWARD = 2;
+    public static final int INTERACTION_COMMENTS_OPEN = 3;
+    public static final int INTERACTION_SHARE = 4;
+    public static final int INTERACTION_FULL_POST_OPEN = 5;
 
     private static final int MAX_CHANNELS = 32;
     private static final int POSTS_PER_CHANNEL = 8;
@@ -35,6 +38,7 @@ public class FeedController extends BaseController {
     private static final long RELOAD_INTERVAL_MS = 5 * 60 * 1000L;
     private static final double RATING_HALF_LIFE_DAYS = 7.0;
     private static final float MAX_RATING = 50f;
+    private static final float MIN_RATING = -30f;
 
     private static final FeedController[] Instance = new FeedController[UserConfig.MAX_ACCOUNT_COUNT];
 
@@ -265,6 +269,7 @@ public class FeedController extends BaseController {
                 }
                 return Integer.compare(b.message.messageOwner.date, a.message.messageOwner.date);
             });
+            diversifyOrder(newPosts);
 
             posts.clear();
             posts.addAll(newPosts);
@@ -291,7 +296,30 @@ public class FeedController extends BaseController {
         if (post.muted) {
             score -= 10f;
         }
+        // exploration: каналы, с которыми ещё не взаимодействовали, подмешиваем выше
+        if (!hasChannelHistory(post.dialogId)) {
+            score += 1.5f;
+        }
+        // уже просмотренное — вниз
+        if (isPostSeen(post.dialogId, post.getId())) {
+            score -= 5f;
+        }
         return score;
+    }
+
+    /** Разнообразие: не даём одному каналу идти подряд, если есть чем разбавить. */
+    private static void diversifyOrder(ArrayList<FeedPost> posts) {
+        for (int i = 1; i < posts.size(); i++) {
+            if (posts.get(i).dialogId != posts.get(i - 1).dialogId) {
+                continue;
+            }
+            for (int j = i + 1; j < Math.min(posts.size(), i + 7); j++) {
+                if (posts.get(j).dialogId != posts.get(i - 1).dialogId) {
+                    posts.add(i, posts.remove(j));
+                    break;
+                }
+            }
+        }
     }
 
     /* Рейтинг каналов: копится от взаимодействий, затухает с полураспадом в неделю. */
@@ -303,16 +331,21 @@ public class FeedController extends BaseController {
     public float getChannelRating(long dialogId) {
         SharedPreferences prefs = getRatingPrefs();
         float rating = prefs.getFloat("r_" + dialogId, 0);
-        if (rating <= 0) {
+        if (rating == 0) {
             return 0;
         }
         long updated = prefs.getLong("t_" + dialogId, 0);
         double days = Math.max(0, System.currentTimeMillis() - updated) / 86400000.0;
+        // затухает к нулю и позитив, и негатив (дизлайки со временем прощаются)
         return rating * (float) Math.pow(0.5, days / RATING_HALF_LIFE_DAYS);
     }
 
+    public boolean hasChannelHistory(long dialogId) {
+        return getRatingPrefs().contains("r_" + dialogId);
+    }
+
     private void addRating(long dialogId, float delta) {
-        float rating = Math.min(MAX_RATING, getChannelRating(dialogId) + delta);
+        float rating = Math.max(MIN_RATING, Math.min(MAX_RATING, getChannelRating(dialogId) + delta));
         getRatingPrefs().edit()
             .putFloat("r_" + dialogId, rating)
             .putLong("t_" + dialogId, System.currentTimeMillis())
@@ -339,7 +372,14 @@ public class FeedController extends BaseController {
                 addRating(dialogId, 2f);
                 break;
             case INTERACTION_FORWARD:
+            case INTERACTION_SHARE:
                 addRating(dialogId, 2.5f);
+                break;
+            case INTERACTION_COMMENTS_OPEN:
+                addRating(dialogId, 1.5f);
+                break;
+            case INTERACTION_FULL_POST_OPEN:
+                addRating(dialogId, 1f);
                 break;
         }
     }
@@ -349,5 +389,71 @@ public class FeedController extends BaseController {
             return;
         }
         addRating(dialogId, Math.min(2f, millis / 1000f * 0.03f));
+    }
+
+    /* TikTok-сигналы уровня поста: сколько секунд смотрели, был ли быстрый свайп-скип */
+
+    public void trackPostDwell(long dialogId, int messageId, long millis, boolean videoCompleted) {
+        if (!isTrackedChannel(dialogId)) {
+            return;
+        }
+        markPostSeen(dialogId, messageId);
+        if (millis < 1200) {
+            addRating(dialogId, -0.2f);       // мгновенный свайп = «не интересно»
+        } else if (millis > 4000) {
+            addRating(dialogId, Math.min(1.2f, (millis - 4000) / 1000f * 0.08f));
+        }
+        if (videoCompleted) {
+            addRating(dialogId, 0.6f);
+        }
+    }
+
+    /* Дизлайк: сильный минус каналу (замена скрытию каналов) */
+
+    public void trackDislike(long dialogId, int messageId) {
+        if (!isTrackedChannel(dialogId)) {
+            return;
+        }
+        markPostSeen(dialogId, messageId);
+        addRating(dialogId, -6f);
+        int count = getRatingPrefs().getInt("disc_" + dialogId, 0) + 1;
+        getRatingPrefs().edit().putInt("disc_" + dialogId, count).apply();
+    }
+
+    public int getDislikeCount(long dialogId) {
+        return getRatingPrefs().getInt("disc_" + dialogId, 0);
+    }
+
+    /* Просмотренные посты: не показываем повторно наверху (кольцо последних 600 id) */
+
+    private java.util.LinkedHashSet<String> seenPosts;
+
+    private java.util.LinkedHashSet<String> getSeenPosts() {
+        if (seenPosts == null) {
+            seenPosts = new java.util.LinkedHashSet<>();
+            String stored = getRatingPrefs().getString("seen_posts", "");
+            if (!stored.isEmpty()) {
+                for (String key : stored.split(",")) {
+                    seenPosts.add(key);
+                }
+            }
+        }
+        return seenPosts;
+    }
+
+    public void markPostSeen(long dialogId, int messageId) {
+        java.util.LinkedHashSet<String> seen = getSeenPosts();
+        String key = dialogId + "_" + messageId;
+        if (!seen.add(key)) {
+            return;
+        }
+        while (seen.size() > 600) {
+            seen.remove(seen.iterator().next());
+        }
+        getRatingPrefs().edit().putString("seen_posts", TextUtils.join(",", seen)).apply();
+    }
+
+    public boolean isPostSeen(long dialogId, int messageId) {
+        return getSeenPosts().contains(dialogId + "_" + messageId);
     }
 }
