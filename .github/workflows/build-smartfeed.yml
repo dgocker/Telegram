@@ -18,6 +18,10 @@ jobs:
       # cmake >= 3.17 подхватывает лаунчеры из env — build.gradle трогать не нужно
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      # sdkmanager ставит NDK заново каждый прогон → mtime компилятора меняется;
+      # без content-check это инвалидирует 100% кэша (проверено: 0/8068 хитов)
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,9 +40,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.ccache
-          key: ccache-ndk-${{ hashFiles('TMessagesProj/jni/**/*.c', 'TMessagesProj/jni/**/*.cpp', 'TMessagesProj/jni/**/*.h', 'TMessagesProj/jni/**/CMakeLists.txt') }}
+          key: ccache-ndk-v2-${{ hashFiles('TMessagesProj/jni/**/*.c', 'TMessagesProj/jni/**/*.cpp', 'TMessagesProj/jni/**/*.h', 'TMessagesProj/jni/**/CMakeLists.txt') }}
           restore-keys: |
-            ccache-ndk-
+            ccache-ndk-v2-
 
       - name: Install Android SDK components
         run: |
