@@ -76,6 +76,7 @@ public class FeedPageView extends FrameLayout {
     private final TextView nameTextView;
     private final TextView infoTextView;
     private final TextView summaryTextView;
+    private final TextView centerTextView;
     private final LinearLayout buttonsColumn;
     private final FrameLayout fullTextOverlay;
     private final TextView fullTextView;
@@ -181,6 +182,17 @@ public class FeedPageView extends FrameLayout {
         summaryTextView.setOnClickListener(v -> setFullTextShown(true));
         bottomOverlay.addView(summaryTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
+        // для постов без медиа текст стоит по центру экрана, а не в нижней трети
+        centerTextView = new TextView(context);
+        centerTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+        centerTextView.setTextColor(Color.WHITE);
+        centerTextView.setLineSpacing(dp(3), 1f);
+        centerTextView.setGravity(Gravity.CENTER);
+        centerTextView.setEllipsize(TextUtils.TruncateAt.END);
+        centerTextView.setVisibility(GONE);
+        centerTextView.setOnClickListener(v -> setFullTextShown(true));
+        addView(centerTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 20, 40, 76, 90));
+
         // полный текст поверх с блюром
         fullTextOverlay = new FrameLayout(context);
         fullTextOverlay.setBackgroundColor(0xB3000000);
@@ -282,7 +294,6 @@ public class FeedPageView extends FrameLayout {
         infoTextView.setText(info);
 
         fullTextView.setText(post.getText());
-        summaryTextView.setVisibility(TextUtils.isEmpty(post.getText()) ? GONE : VISIBLE);
 
         if (mediaMessages.isEmpty()) {
             // текстовый пост: градиент вместо медиа
@@ -305,18 +316,23 @@ public class FeedPageView extends FrameLayout {
     public void setSummary(String summary, boolean modelAvailable) {
         if (post == null || TextUtils.isEmpty(post.getText())) {
             summaryTextView.setVisibility(GONE);
+            centerTextView.setVisibility(GONE);
             return;
         }
-        summaryTextView.setVisibility(VISIBLE);
-        summaryTextView.setMaxLines(mediaMessages.isEmpty() ? 14 : 6);
+        // пост без медиа: текст по центру экрана, с медиа — в нижней трети
+        final boolean textOnly = mediaMessages.isEmpty();
+        final TextView target = textOnly ? centerTextView : summaryTextView;
+        summaryTextView.setVisibility(textOnly ? GONE : VISIBLE);
+        centerTextView.setVisibility(textOnly ? VISIBLE : GONE);
+        target.setMaxLines(textOnly ? 16 : 6);
         if (summary != null) {
-            summaryTextView.setTypeface(null);
-            summaryTextView.setAlpha(1f);
-            summaryTextView.setText(summary);
+            target.setTypeface(null);
+            target.setAlpha(1f);
+            target.setText(summary);
         } else {
-            summaryTextView.setTypeface(android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC));
-            summaryTextView.setAlpha(0.7f);
-            summaryTextView.setText(LocaleController.getString(modelAvailable ? R.string.SmartFeedSummarizing : R.string.SmartFeedSummaryUnavailable));
+            target.setTypeface(android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC));
+            target.setAlpha(0.7f);
+            target.setText(LocaleController.getString(modelAvailable ? R.string.SmartFeedSummarizing : R.string.SmartFeedSummaryUnavailable));
         }
     }
 
@@ -340,6 +356,9 @@ public class FeedPageView extends FrameLayout {
         fullTextShown = shown;
         fullTextOverlay.setVisibility(shown ? VISIBLE : GONE);
         bottomOverlay.setVisibility(shown ? INVISIBLE : VISIBLE);
+        if (mediaMessages.isEmpty()) {
+            centerTextView.setVisibility(shown ? INVISIBLE : VISIBLE);
+        }
         applyBlur(shown);
     }
 
@@ -372,6 +391,7 @@ public class FeedPageView extends FrameLayout {
         bottomOverlay.setAlpha(otherAlpha);
         buttonsColumn.setAlpha(otherAlpha);
         dotsIndicator.setAlpha(otherAlpha);
+        centerTextView.setAlpha(otherAlpha);
         bottomOverlay.setVisibility(otherAlpha == 0 ? INVISIBLE : VISIBLE);
         buttonsColumn.setVisibility(otherAlpha == 0 ? INVISIBLE : VISIBLE);
     }

@@ -45,7 +45,9 @@ public class FeedSummarizer {
     private static final int EOS_ID = 1;
     private static final int DECODER_START_ID = 2;
     private static final int MAX_INPUT_TOKENS = 512;
-    public static final int MIN_TEXT_LENGTH_TO_SUMMARIZE = 250;
+    // короткие новости выжимка только калечит (смысловые искажения при длине,
+    // сравнимой с оригиналом) — ИИ подключается только для действительно длинных постов
+    public static final int MIN_TEXT_LENGTH_TO_SUMMARIZE = 700;
 
     public static class ModelFile {
         public final String name;
