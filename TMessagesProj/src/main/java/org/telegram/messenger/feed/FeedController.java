@@ -172,11 +172,15 @@ public class FeedController extends BaseController {
             req.limit = POSTS_PER_CHANNEL;
             req.offset_id = 0;
             getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                if (response instanceof TLRPC.messages_Messages) {
-                    TLRPC.messages_Messages res = (TLRPC.messages_Messages) response;
-                    getMessagesController().putUsers(res.users, false);
-                    getMessagesController().putChats(res.chats, false);
-                    allMessages.addAll(res.messages);
+                try {
+                    if (response instanceof TLRPC.messages_Messages) {
+                        TLRPC.messages_Messages res = (TLRPC.messages_Messages) response;
+                        getMessagesController().putUsers(res.users, false);
+                        getMessagesController().putChats(res.chats, false);
+                        allMessages.addAll(res.messages);
+                    }
+                } catch (Throwable e) {
+                    FileLog.e(e);
                 }
                 pending[0]--;
                 if (pending[0] == 0) {
@@ -207,7 +211,10 @@ public class FeedController extends BaseController {
                     continue;
                 }
 
-                if (msg.grouped_id != 0) {
+                // в грид группируем только фото/видео-альбомы: у документов и музыки
+                // GroupedMessages.calculate() не даёт осмысленной геометрии
+                final boolean groupableMedia = msg.grouped_id != 0 && (messageObject.isVideo() || messageObject.isPhoto());
+                if (groupableMedia) {
                     FeedPost existing = byGroup.get(msg.grouped_id);
                     if (existing != null) {
                         existing.album.add(messageObject);
@@ -219,7 +226,7 @@ public class FeedController extends BaseController {
                 post.dialogId = dialogId;
                 post.chat = chat;
                 post.message = messageObject;
-                if (msg.grouped_id != 0) {
+                if (groupableMedia) {
                     post.album = new ArrayList<>();
                     post.album.add(messageObject);
                     byGroup.put(msg.grouped_id, post);

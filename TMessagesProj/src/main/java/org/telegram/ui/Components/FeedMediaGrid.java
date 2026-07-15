@@ -14,9 +14,11 @@ import androidx.core.content.ContextCompat;
 import android.graphics.drawable.Drawable;
 
 import org.telegram.messenger.FileLoader;
+import org.telegram.messenger.ImageLoader;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.R;
+import org.telegram.messenger.SharedConfig;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
@@ -72,11 +74,13 @@ public class FeedMediaGrid extends ViewGroup {
             itemViews.add(view);
             addView(view);
         }
+        // одиночное видео автоплеится прямо в ленте (без звука, как в чатах)
+        final boolean autoplay = messages.size() == 1 && messages.get(0).isVideo() && SharedConfig.isAutoplayVideo();
         for (int i = 0; i < itemViews.size(); i++) {
             ItemView view = itemViews.get(i);
             if (i < messages.size()) {
                 view.setVisibility(VISIBLE);
-                view.bind(messages.get(i));
+                view.bind(messages.get(i), autoplay);
             } else {
                 view.setVisibility(GONE);
             }
@@ -216,8 +220,9 @@ public class FeedMediaGrid extends ViewGroup {
             super(context);
         }
 
-        public void bind(MessageObject messageObject) {
-            isVideo = messageObject.isVideo();
+        public void bind(MessageObject messageObject, boolean autoplay) {
+            TLRPC.Document document = messageObject.getDocument();
+            isVideo = messageObject.isVideo() && !(autoplay && document != null);
             if (isVideo && playDrawable == null) {
                 playDrawable = ContextCompat.getDrawable(getContext(), R.drawable.play_mini_video).mutate();
             }
@@ -226,10 +231,19 @@ public class FeedMediaGrid extends ViewGroup {
             if (thumbSize == photoSize) {
                 thumbSize = null;
             }
-            getImageReceiver().setImage(
-                ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), "640_640",
-                ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
-                photoSize != null ? photoSize.size : 0, null, messageObject, 1);
+            if (autoplay && document != null) {
+                getImageReceiver().setAllowStartAnimation(true);
+                getImageReceiver().setImage(
+                    ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER,
+                    ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), "640_640",
+                    ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
+                    null, document.size, null, messageObject, 0);
+            } else {
+                getImageReceiver().setImage(
+                    ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), "640_640",
+                    ImageLocation.getForObject(thumbSize, messageObject.photoThumbsObject), "50_50_b",
+                    photoSize != null ? photoSize.size : 0, null, messageObject, 1);
+            }
         }
 
         @Override

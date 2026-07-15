@@ -140,31 +140,73 @@ public class FeedSummarizer {
         return persisted;
     }
 
+    private static class Job {
+        final String cacheKey;
+        final String text;
+        final Utilities.Callback<String> onDone;
+
+        Job(String cacheKey, String text, Utilities.Callback<String> onDone) {
+            this.cacheKey = cacheKey;
+            this.text = text;
+            this.onDone = onDone;
+        }
+    }
+
+    // LIFO с вытеснением: при быстрой прокрутке видимый сейчас пост обрабатывается
+    // первым, а не ждёт хвост из уже пролистанных
+    private static final int MAX_PENDING_JOBS = 6;
+    private final java.util.ArrayDeque<Job> jobs = new java.util.ArrayDeque<>();
+
     /**
-     * Асинхронная выжимка. Колбэк приходит на UI-потоке; null — модель недоступна или ошибка.
+     * Асинхронная выжимка. Колбэк приходит на UI-потоке; null — модель недоступна,
+     * ошибка или запрос вытеснен из очереди (можно перезапросить).
      */
     public void summarize(long dialogId, int messageId, String text, Utilities.Callback<String> onDone) {
         final String key = dialogId + "_" + messageId + "_" + getSummaryLength();
-        queue.postRunnable(() -> {
-            String result = null;
-            try {
-                result = summarizeSync(text);
-            } catch (Throwable e) {
-                FileLog.e(e);
-            }
-            if (result != null) {
-                synchronized (memoryCache) {
-                    memoryCache.put(key, result);
+        java.util.ArrayList<Job> dropped = null;
+        synchronized (jobs) {
+            jobs.addFirst(new Job(key, text, onDone));
+            while (jobs.size() > MAX_PENDING_JOBS) {
+                if (dropped == null) {
+                    dropped = new java.util.ArrayList<>();
                 }
-                SharedPreferences prefs = getCachePrefs();
-                if (prefs.getAll().size() > 500) {
-                    prefs.edit().clear().apply();
-                }
-                prefs.edit().putString(key, result).apply();
+                dropped.add(jobs.removeLast());
             }
-            final String finalResult = result;
-            AndroidUtilities.runOnUIThread(() -> onDone.run(finalResult));
-        });
+        }
+        if (dropped != null) {
+            for (Job job : dropped) {
+                AndroidUtilities.runOnUIThread(() -> job.onDone.run(null));
+            }
+        }
+        queue.postRunnable(this::drainQueue);
+    }
+
+    private void drainQueue() {
+        Job job;
+        synchronized (jobs) {
+            job = jobs.pollFirst();
+        }
+        if (job == null) {
+            return;
+        }
+        String result = null;
+        try {
+            result = summarizeSync(job.text);
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+        if (result != null) {
+            synchronized (memoryCache) {
+                memoryCache.put(job.cacheKey, result);
+            }
+            SharedPreferences prefs = getCachePrefs();
+            if (prefs.getAll().size() > 500) {
+                prefs.edit().clear().apply();
+            }
+            prefs.edit().putString(job.cacheKey, result).apply();
+        }
+        final String finalResult = result;
+        AndroidUtilities.runOnUIThread(() -> job.onDone.run(finalResult));
     }
 
     private boolean ensureInit() {

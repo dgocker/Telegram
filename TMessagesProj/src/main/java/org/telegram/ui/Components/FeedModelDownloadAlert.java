@@ -2,6 +2,7 @@ package org.telegram.ui.Components;
 
 import static org.telegram.messenger.LocaleController.getString;
 
+import android.app.Activity;
 import android.content.Context;
 
 import org.telegram.messenger.AndroidUtilities;
@@ -58,7 +59,7 @@ public class FeedModelDownloadAlert {
                     if (onSuccess != null) {
                         onSuccess.run();
                     }
-                } else if (!cancelledByUser[0]) {
+                } else if (!cancelledByUser[0] && isContextAlive(context)) {
                     AlertDialog.Builder builder = new AlertDialog.Builder(context, resourcesProvider);
                     builder.setTitle(getString(R.string.AppName));
                     builder.setMessage(getString(R.string.SmartFeedDownloadFailed));
@@ -71,6 +72,16 @@ public class FeedModelDownloadAlert {
             cancelledByUser[0] = true;
             downloader.cancel();
         });
-        progressDialog.show();
+        if (isContextAlive(context)) {
+            progressDialog.show();
+        }
+    }
+
+    private static boolean isContextAlive(Context context) {
+        if (context instanceof Activity) {
+            Activity activity = (Activity) context;
+            return !activity.isFinishing() && !activity.isDestroyed();
+        }
+        return context != null;
     }
 }

@@ -48,6 +48,10 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private EmptyTextProgressView emptyView;
 
     private final HashSet<String> requestedSummaries = new HashSet<>();
+    private final java.util.HashMap<String, Integer> summaryAttempts = new java.util.HashMap<>();
+    // кэш: isModelDownloaded() ходит по диску, из адаптера её дёргать нельзя,
+    // а смена значения без notifyDataSetChanged роняет RecyclerView
+    private boolean modelDownloaded;
 
     public FeedFragment(Bundle args) {
         super(args);
@@ -59,6 +63,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             hasMainTabs = arguments.getBoolean("hasMainTabs", false);
         }
         additionNavigationBarHeight = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
+        modelDownloaded = FeedSummarizer.isModelDownloaded();
         getNotificationCenter().addObserver(this, NotificationCenter.smartFeedDidLoad);
         getNotificationCenter().addObserver(this, NotificationCenter.dialogsNeedReload);
         FeedController.getInstance(currentAccount).loadFeed(false);
@@ -109,10 +114,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             if (adapter.hasBanner() && position == 0) {
                 showModelDownloadAlert();
             } else if (view instanceof FeedPostCell) {
-                FeedController.FeedPost post = ((FeedPostCell) view).getPost();
-                if (post != null) {
-                    showDialog(new FeedPostSheet(FeedFragment.this, post));
-                }
+                showPostSheet(((FeedPostCell) view).getPost());
             }
         });
         contentView.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
@@ -151,11 +153,22 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     @Override
     public void onResume() {
         super.onResume();
+        checkModelDownloaded();
         FeedController.getInstance(currentAccount).loadFeed(false);
         if (adapter != null) {
             adapter.notifyDataSetChanged();
         }
         updateEmptyView();
+    }
+
+    private void checkModelDownloaded() {
+        boolean downloaded = FeedSummarizer.isModelDownloaded();
+        if (downloaded != modelDownloaded) {
+            modelDownloaded = downloaded;
+            if (adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+        }
     }
 
     @Override
@@ -183,15 +196,17 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         }
     }
 
+    private void showPostSheet(FeedController.FeedPost post) {
+        if (post != null && getParentActivity() != null) {
+            showDialog(new FeedPostSheet(FeedFragment.this, post));
+        }
+    }
+
     private void showModelDownloadAlert() {
         if (getParentActivity() == null) {
             return;
         }
-        FeedModelDownloadAlert.show(getParentActivity(), getResourceProvider(), () -> {
-            if (adapter != null) {
-                adapter.notifyDataSetChanged();
-            }
-        });
+        FeedModelDownloadAlert.show(getParentActivity(), getResourceProvider(), this::checkModelDownloaded);
     }
 
     /* TabFragmentDelegate */
@@ -219,7 +234,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             cell.setSummary(null, true);
             return;
         }
-        final boolean modelReady = FeedSummarizer.isModelDownloaded();
+        final boolean modelReady = modelDownloaded;
         final String cached = FeedSummarizer.getInstance().getCached(post.dialogId, post.getId());
         if (cached != null) {
             cell.setSummary(cached, modelReady);
@@ -244,11 +259,29 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             if (listView == null) {
                 return;
             }
-            final String result = summary != null ? summary : text.trim();
+            FeedPostCell visibleCell = null;
             for (int i = 0; i < listView.getChildCount(); i++) {
                 View child = listView.getChildAt(i);
                 if (child instanceof FeedPostCell && ((FeedPostCell) child).getPost() == requestedPost) {
-                    ((FeedPostCell) child).setSummary(result, true);
+                    visibleCell = (FeedPostCell) child;
+                    break;
+                }
+            }
+            if (summary != null) {
+                summaryAttempts.remove(key);
+                if (visibleCell != null) {
+                    visibleCell.setSummary(summary, true);
+                }
+                return;
+            }
+            // запрос вытеснен из очереди при быстрой прокрутке или упал — ретраим
+            int attempts = summaryAttempts.containsKey(key) ? summaryAttempts.get(key) : 0;
+            summaryAttempts.put(key, attempts + 1);
+            if (visibleCell != null) {
+                if (attempts + 1 < 3) {
+                    bindSummary(visibleCell, requestedPost);
+                } else {
+                    visibleCell.setSummary(text.trim(), true);
                 }
             }
         });
@@ -266,7 +299,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         }
 
         public boolean hasBanner() {
-            return !FeedSummarizer.isModelDownloaded();
+            return !modelDownloaded;
         }
 
         @Override
@@ -320,6 +353,8 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
                 FeedController.FeedPost post = FeedController.getInstance(currentAccount).getPosts().get(index);
                 FeedPostCell cell = (FeedPostCell) holder.itemView;
                 cell.setPost(post);
+                // тап по медиа открывает ту же модалку, что и тап по карточке
+                cell.getMediaGrid().setOnMediaClickListener(mediaIndex -> showPostSheet(post));
                 bindSummary(cell, post);
             }
         }

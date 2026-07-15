@@ -77,10 +77,11 @@ public class FeedPostSheet extends BottomSheetWithRecyclerListView {
     private MessageObject topMessageObject;
     private long discussionDialogId;
     private final ArrayList<TLRPC.Message> comments = new ArrayList<>();
+    private static final int LOCAL_COMMENT_ID_BASE = Integer.MAX_VALUE - 100000;
     private int maxServerCommentId;
     private boolean commentsLoading;
     private boolean commentsEndReached;
-    private int localCommentIdCounter = Integer.MAX_VALUE - 100000;
+    private int localCommentIdCounter = LOCAL_COMMENT_ID_BASE;
 
     public FeedPostSheet(BaseFragment fragment, FeedController.FeedPost post) {
         super(fragment, true, false);
@@ -134,12 +135,16 @@ public class FeedPostSheet extends BottomSheetWithRecyclerListView {
             }
         });
 
+        if (actionBar != null) {
+            actionBar.setTitle(getTitle());
+        }
         loadDiscussion();
     }
 
     @Override
     protected CharSequence getTitle() {
-        return post.chat != null ? post.chat.title : "";
+        // вызывается из конструктора базового класса, когда post ещё null
+        return post != null && post.chat != null ? post.chat.title : "";
     }
 
     @Override
@@ -239,7 +244,7 @@ public class FeedPostSheet extends BottomSheetWithRecyclerListView {
                     java.util.Collections.sort(fresh, (a, b) -> a.id - b.id);
                     // локальные (оптимистичные) комментарии держим в конце
                     int insertIndex = comments.size();
-                    while (insertIndex > 0 && comments.get(insertIndex - 1).id >= localCommentIdCounter) {
+                    while (insertIndex > 0 && comments.get(insertIndex - 1).id >= LOCAL_COMMENT_ID_BASE) {
                         insertIndex--;
                     }
                     comments.addAll(insertIndex, fresh);
@@ -367,7 +372,9 @@ public class FeedPostSheet extends BottomSheetWithRecyclerListView {
         }
         if (commentsUnavailable || (commentsEndReached && comments.isEmpty())) {
             statusRow = rowCount++;
-        } else if (commentsLoading || discussionLoading || (!commentsEndReached && topMessage != null && comments.isEmpty())) {
+        } else if (comments.isEmpty()) {
+            // индикатор только в пустом состоянии: иначе loadComments() из
+            // scroll-листенера менял бы rowCount без notify прямо во время скролла
             loadingRow = rowCount++;
         }
     }
