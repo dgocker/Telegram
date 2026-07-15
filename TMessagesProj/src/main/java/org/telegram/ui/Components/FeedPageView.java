@@ -71,6 +71,7 @@ public class FeedPageView extends FrameLayout {
     private final CarouselAdapter carouselAdapter = new CarouselAdapter();
     private final DotsIndicator dotsIndicator;
     private final LinearLayout bottomOverlay;
+    private final FrameLayout channelRow;
     private final BackupImageView avatarImageView;
     private final AvatarDrawable avatarDrawable = new AvatarDrawable();
     private final TextView nameTextView;
@@ -141,10 +142,7 @@ public class FeedPageView extends FrameLayout {
         });
         mediaContainer.addView(carousel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
 
-        dotsIndicator = new DotsIndicator(context);
-        addView(dotsIndicator, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, 20, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
-
-        // нижняя треть: канал + выжимка
+        // нижняя треть: канал (всегда виден) + выжимка (может прятаться)
         bottomOverlay = new LinearLayout(context);
         bottomOverlay.setOrientation(LinearLayout.VERTICAL);
         bottomOverlay.setPadding(dp(14), dp(30), dp(72), dp(10));
@@ -153,8 +151,12 @@ public class FeedPageView extends FrameLayout {
         bottomOverlay.setBackground(shade);
         addView(bottomOverlay, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM));
 
-        FrameLayout channelRow = new FrameLayout(context);
-        bottomOverlay.addView(channelRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36, 0, 0, 0, 8));
+        // точки-индикатор карусели над панелью, по центру
+        dotsIndicator = new DotsIndicator(context);
+        bottomOverlay.addView(dotsIndicator, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, 16, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 8));
+
+        channelRow = new FrameLayout(context);
+        bottomOverlay.addView(channelRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 0, 0, 0, 6));
 
         avatarImageView = new BackupImageView(context);
         avatarImageView.setRoundRadius(dp(18));
@@ -166,15 +168,15 @@ public class FeedPageView extends FrameLayout {
         nameTextView.setTextColor(Color.WHITE);
         nameTextView.setSingleLine(true);
         nameTextView.setEllipsize(TextUtils.TruncateAt.END);
-        nameTextView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
-        channelRow.addView(nameTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 0, 0, 0));
+        nameTextView.setShadowLayer(dp(2), 0, dp(1), 0xB3000000);
+        channelRow.addView(nameTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 2, 0, 0));
 
         infoTextView = new TextView(context);
         infoTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
         infoTextView.setTextColor(0xCCFFFFFF);
         infoTextView.setSingleLine(true);
-        infoTextView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
-        channelRow.addView(infoTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 19, 0, 0));
+        infoTextView.setShadowLayer(dp(2), 0, dp(1), 0xB3000000);
+        channelRow.addView(infoTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 21, 0, 0));
 
         summaryTextView = new TextView(context);
         summaryTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
@@ -183,7 +185,7 @@ public class FeedPageView extends FrameLayout {
         summaryTextView.setEllipsize(TextUtils.TruncateAt.END);
         summaryTextView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
         summaryTextView.setOnClickListener(v -> setFullTextShown(true));
-        bottomOverlay.addView(summaryTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        bottomOverlay.addView(summaryTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 6, 0, 0));
 
         // для постов без медиа текст стоит по центру экрана, а не в нижней трети
         centerTextView = new TextView(context);
@@ -307,7 +309,6 @@ public class FeedPageView extends FrameLayout {
     public void setInsets(int top, int bottom) {
         topInset = top;
         bottomInset = bottom;
-        ((LayoutParams) dotsIndicator.getLayoutParams()).topMargin = top + dp(8);
         ((LayoutParams) bottomOverlay.getLayoutParams()).bottomMargin = bottom;
         ((LayoutParams) buttonsColumn.getLayoutParams()).bottomMargin = bottom + dp(4);
         fullTextView.setPadding(dp(18), topInset + dp(24), dp(18), bottom + dp(24));
@@ -431,7 +432,8 @@ public class FeedPageView extends FrameLayout {
         }
         overlaysHiddenByTouch = hidden;
         float alpha = hidden ? 0f : 1f;
-        bottomOverlay.animate().alpha(alpha).setDuration(180).start();
+        // прячем только текст-выжимку и кнопки; шапка канала остаётся видимой всегда
+        summaryTextView.animate().alpha(alpha).setDuration(180).start();
         buttonsColumn.animate().alpha(alpha).setDuration(180).start();
     }
 

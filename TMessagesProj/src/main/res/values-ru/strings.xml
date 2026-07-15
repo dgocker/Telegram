@@ -284,4 +284,8 @@
     <string name="SmartFeedCommentHint">Комментарий…</string>
     <string name="SmartFeedViews">%1$s просмотров</string>
     <string name="SmartFeedDisliked">Канал будет показываться реже</string>
+    <string name="SmartFeedHistory">Просмотренное</string>
+    <string name="SmartFeedHistoryEmpty">Вы ещё не смотрели посты</string>
+    <string name="SmartFeedHistoryClear">Очистить историю</string>
+    <string name="SmartFeedTypeText">Текст</string>
 </resources>

@@ -136,7 +136,9 @@ public class FeedController extends BaseController {
         if (loading) {
             return;
         }
-        if (!force && loadedOnce && !posts.isEmpty() && System.currentTimeMillis() - lastLoadTime < RELOAD_INTERVAL_MS) {
+        // показанную ленту НЕ пересобираем при возврате в приложение — иначе теряются
+        // порядок, позиция и тексты постов. Обновляем только пустую ленту либо по force.
+        if (!force && loadedOnce && !posts.isEmpty()) {
             return;
         }
 
@@ -253,6 +255,11 @@ public class FeedController extends BaseController {
                     post.score = Float.NEGATIVE_INFINITY;
                     continue;
                 }
+                // уже просмотренное не показываем повторно (жёстко)
+                if (isPostSeen(post.dialogId, post.getId())) {
+                    post.score = Float.NEGATIVE_INFINITY;
+                    continue;
+                }
                 post.muted = getMessagesController().isDialogMuted(post.dialogId, 0);
                 post.score = calculateScore(post, now);
             }
@@ -300,11 +307,50 @@ public class FeedController extends BaseController {
         if (!hasChannelHistory(post.dialogId)) {
             score += 1.5f;
         }
-        // уже просмотренное — вниз
-        if (isPostSeen(post.dialogId, post.getId())) {
-            score -= 5f;
-        }
+        // предпочтение по типу контента (видео/фото/текст)
+        score += getContentTypeBias(contentTypeOf(post));
         return score;
+    }
+
+    /* Предпочтение по типу контента: копим отклик отдельно на видео / фото / текст */
+
+    public static final int TYPE_TEXT = 0;
+    public static final int TYPE_PHOTO = 1;
+    public static final int TYPE_VIDEO = 2;
+
+    public static int contentTypeOf(FeedPost post) {
+        if (post.message.isVideo()) {
+            return TYPE_VIDEO;
+        }
+        if (post.message.photoThumbs != null && !post.message.photoThumbs.isEmpty()) {
+            return TYPE_PHOTO;
+        }
+        return TYPE_TEXT;
+    }
+
+    private float getTypeRating(int type) {
+        SharedPreferences prefs = getRatingPrefs();
+        float rating = prefs.getFloat("type_" + type, 0);
+        if (rating == 0) {
+            return 0;
+        }
+        long updated = prefs.getLong("typet_" + type, 0);
+        double days = Math.max(0, System.currentTimeMillis() - updated) / 86400000.0;
+        return rating * (float) Math.pow(0.5, days / RATING_HALF_LIFE_DAYS);
+    }
+
+    private void addTypeRating(int type, float delta) {
+        float rating = Math.max(-20f, Math.min(30f, getTypeRating(type) + delta));
+        getRatingPrefs().edit()
+            .putFloat("type_" + type, rating)
+            .putLong("typet_" + type, System.currentTimeMillis())
+            .apply();
+    }
+
+    /** Смещение скора: любимый тип выше, нелюбимый ниже, относительно среднего по типам. */
+    private float getContentTypeBias(int type) {
+        float avg = (getTypeRating(TYPE_TEXT) + getTypeRating(TYPE_PHOTO) + getTypeRating(TYPE_VIDEO)) / 3f;
+        return 0.15f * (getTypeRating(type) - avg);
     }
 
     /** Разнообразие: не даём одному каналу идти подряд, если есть чем разбавить. */
@@ -394,28 +440,41 @@ public class FeedController extends BaseController {
     /* TikTok-сигналы уровня поста: сколько секунд смотрели, был ли быстрый свайп-скип */
 
     public void trackPostDwell(long dialogId, int messageId, long millis, boolean videoCompleted) {
+        trackPostDwell(dialogId, messageId, millis, videoCompleted, TYPE_TEXT, null);
+    }
+
+    public void trackPostDwell(long dialogId, int messageId, long millis, boolean videoCompleted, int contentType, String title) {
         if (!isTrackedChannel(dialogId)) {
             return;
         }
-        markPostSeen(dialogId, messageId);
+        markPostSeen(dialogId, messageId, contentType, title);
         if (millis < 1200) {
             addRating(dialogId, -0.2f);       // мгновенный свайп = «не интересно»
+            addTypeRating(contentType, -0.15f);
         } else if (millis > 4000) {
-            addRating(dialogId, Math.min(1.2f, (millis - 4000) / 1000f * 0.08f));
+            float boost = Math.min(1.2f, (millis - 4000) / 1000f * 0.08f);
+            addRating(dialogId, boost);
+            addTypeRating(contentType, boost * 0.5f);
         }
         if (videoCompleted) {
             addRating(dialogId, 0.6f);
+            addTypeRating(contentType, 0.4f);
         }
     }
 
     /* Дизлайк: сильный минус каналу (замена скрытию каналов) */
 
     public void trackDislike(long dialogId, int messageId) {
+        trackDislike(dialogId, messageId, TYPE_TEXT);
+    }
+
+    public void trackDislike(long dialogId, int messageId, int contentType) {
         if (!isTrackedChannel(dialogId)) {
             return;
         }
-        markPostSeen(dialogId, messageId);
+        markPostSeen(dialogId, messageId, contentType, null);
         addRating(dialogId, -6f);
+        addTypeRating(contentType, -1.5f);
         int count = getRatingPrefs().getInt("disc_" + dialogId, 0) + 1;
         getRatingPrefs().edit().putInt("disc_" + dialogId, count).apply();
     }
@@ -424,36 +483,96 @@ public class FeedController extends BaseController {
         return getRatingPrefs().getInt("disc_" + dialogId, 0);
     }
 
-    /* Просмотренные посты: не показываем повторно наверху (кольцо последних 600 id) */
+    /* История просмотренного: постоянная, просмотренное не показываем повторно */
+
+    private static final int MAX_HISTORY = 3000;
+
+    public static class HistoryEntry {
+        public long dialogId;
+        public int messageId;
+        public int contentType;
+        public String title;
+        public long seenAt;
+    }
 
     private java.util.LinkedHashSet<String> seenPosts;
+
+    private SharedPreferences getHistoryPrefs() {
+        return ApplicationLoader.applicationContext.getSharedPreferences("feed_history" + currentAccount, 0);
+    }
 
     private java.util.LinkedHashSet<String> getSeenPosts() {
         if (seenPosts == null) {
             seenPosts = new java.util.LinkedHashSet<>();
-            String stored = getRatingPrefs().getString("seen_posts", "");
+            String stored = getHistoryPrefs().getString("seen_ids", "");
             if (!stored.isEmpty()) {
-                for (String key : stored.split(",")) {
-                    seenPosts.add(key);
-                }
+                Collections.addAll(seenPosts, stored.split(","));
             }
         }
         return seenPosts;
     }
 
     public void markPostSeen(long dialogId, int messageId) {
+        markPostSeen(dialogId, messageId, TYPE_TEXT, null);
+    }
+
+    public void markPostSeen(long dialogId, int messageId, int contentType, String title) {
         java.util.LinkedHashSet<String> seen = getSeenPosts();
         String key = dialogId + "_" + messageId;
         if (!seen.add(key)) {
             return;
         }
-        while (seen.size() > 600) {
+        while (seen.size() > MAX_HISTORY) {
             seen.remove(seen.iterator().next());
         }
-        getRatingPrefs().edit().putString("seen_posts", TextUtils.join(",", seen)).apply();
+        SharedPreferences prefs = getHistoryPrefs();
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString("seen_ids", TextUtils.join(",", seen));
+        // детали для экрана истории (title|type|time)
+        String detail = (title == null ? "" : title.replace("\n", " ").replace("\u0001", " ")) + "\u0001" + contentType + "\u0001" + System.currentTimeMillis();
+        editor.putString("h_" + key, detail);
+        editor.apply();
     }
 
     public boolean isPostSeen(long dialogId, int messageId) {
         return getSeenPosts().contains(dialogId + "_" + messageId);
+    }
+
+    /** История для экрана «Просмотренное», новые сверху. */
+    public ArrayList<HistoryEntry> getHistory() {
+        java.util.LinkedHashSet<String> seen = getSeenPosts();
+        SharedPreferences prefs = getHistoryPrefs();
+        ArrayList<HistoryEntry> result = new ArrayList<>();
+        for (String key : seen) {
+            String detail = prefs.getString("h_" + key, null);
+            HistoryEntry entry = new HistoryEntry();
+            int us = key.indexOf('_');
+            if (us <= 0) {
+                continue;
+            }
+            try {
+                entry.dialogId = Long.parseLong(key.substring(0, us));
+                entry.messageId = Integer.parseInt(key.substring(us + 1));
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            if (detail != null) {
+                String[] parts = detail.split("\u0001", -1);
+                entry.title = parts.length > 0 ? parts[0] : "";
+                try {
+                    entry.contentType = parts.length > 1 ? Integer.parseInt(parts[1]) : TYPE_TEXT;
+                    entry.seenAt = parts.length > 2 ? Long.parseLong(parts[2]) : 0;
+                } catch (NumberFormatException ignore) {
+                }
+            }
+            result.add(entry);
+        }
+        Collections.reverse(result);
+        return result;
+    }
+
+    public void clearHistory() {
+        getSeenPosts().clear();
+        getHistoryPrefs().edit().clear().apply();
     }
 }

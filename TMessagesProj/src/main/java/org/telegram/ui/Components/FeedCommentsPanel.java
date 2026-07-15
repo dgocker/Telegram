@@ -12,6 +12,7 @@ import android.graphics.PorterDuffColorFilter;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -67,7 +68,13 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         setClickable(true);
 
         FrameLayout header = new FrameLayout(context);
+        header.setOnTouchListener(this::onHeaderTouch);
         addView(header, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 44, Gravity.TOP));
+
+        // grabber-полоска сверху (потянуть вниз — закрыть)
+        View grabber = new View(context);
+        grabber.setBackground(Theme.createRoundRectDrawable(dp(2), Theme.getColor(Theme.key_windowBackgroundWhiteGrayText) & 0x66FFFFFF));
+        header.addView(grabber, LayoutHelper.createFrame(36, 4, Gravity.CENTER_HORIZONTAL | Gravity.TOP, 0, 6, 0, 0));
 
         titleView = new TextView(context);
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
@@ -134,6 +141,52 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
             }
         });
         inputBar.addView(sendButton, LayoutHelper.createFrame(48, 48, Gravity.RIGHT | Gravity.CENTER_VERTICAL, 0, 1, 2, 0));
+    }
+
+    /** Отступ под плавающую нижнюю навигацию, чтобы поле ввода не заезжало под таб-бар. */
+    public void setBottomInset(int inset) {
+        if (getPaddingBottom() != inset) {
+            setPadding(0, 0, 0, inset);
+            requestLayout();
+        }
+    }
+
+    /* Потянуть заголовок вниз — закрыть с плавным уходом (как bottom sheet в TG) */
+
+    private float dragStartY;
+    private boolean dragging;
+
+    private boolean onHeaderTouch(View v, MotionEvent e) {
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragStartY = e.getRawY();
+                dragging = false;
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                float dy = e.getRawY() - dragStartY;
+                if (dy > 0) {
+                    dragging = true;
+                    setTranslationY(dy);
+                    int height = getHeight() > 0 ? getHeight() : dp(400);
+                    if (delegate != null) {
+                        delegate.onShrinkProgress(Math.max(0f, 1f - dy / height), height);
+                    }
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                float dy = e.getRawY() - dragStartY;
+                if (dragging && dy > getHeight() * 0.25f) {
+                    hide();
+                } else {
+                    animateTo(1f, null);
+                }
+                dragging = false;
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isShown() {

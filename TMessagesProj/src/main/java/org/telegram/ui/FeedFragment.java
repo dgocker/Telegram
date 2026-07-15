@@ -63,6 +63,8 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private PagerAdapter adapter;
     private EmptyTextProgressView emptyView;
     private FeedCommentsPanel commentsPanel;
+    private View commentsScrim;
+    private android.widget.ImageView historyButton;
 
 
     private int currentPage = -1;
@@ -144,8 +146,41 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         pager.setEmptyView(emptyView);
         contentView.addView(pager, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
 
+        // скрим над шторкой комментов: тап или свайп вправо закрывают
+        commentsScrim = new View(context);
+        commentsScrim.setVisibility(View.GONE);
+        final android.view.GestureDetector scrimGestures = new android.view.GestureDetector(context, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onSingleTapUp(MotionEvent e) {
+                if (commentsPanel != null) {
+                    commentsPanel.hide();
+                }
+                return true;
+            }
+
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float vx, float vy) {
+                if (e1 != null && (Math.abs(e2.getX() - e1.getX()) > dp(60) || Math.abs(vx) > 800) && commentsPanel != null) {
+                    commentsPanel.hide();
+                    return true;
+                }
+                return false;
+            }
+        });
+        commentsScrim.setOnTouchListener((v, e) -> scrimGestures.onTouchEvent(e));
+        contentView.addView(commentsScrim, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+
         commentsPanel = new FeedCommentsPanel(context, currentAccount, this);
         contentView.addView(commentsPanel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 400, Gravity.BOTTOM));
+
+        // кнопка «Просмотренное» сверху справа (центр активности)
+        historyButton = new android.widget.ImageView(context);
+        historyButton.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        historyButton.setImageResource(R.drawable.msg_recent);
+        historyButton.setColorFilter(new android.graphics.PorterDuffColorFilter(Color.WHITE, android.graphics.PorterDuff.Mode.SRC_IN));
+        historyButton.setBackground(org.telegram.ui.ActionBar.Theme.createSelectorDrawable(0x33FFFFFF, 1));
+        historyButton.setOnClickListener(v -> presentFragment(new FeedHistoryActivity()));
+        contentView.addView(historyButton, LayoutHelper.createFrame(40, 40, Gravity.TOP | Gravity.RIGHT, 0, 8, 8, 0));
 
         if (hasMainTabs) {
             ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onInsetsInternal);
@@ -161,13 +196,18 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     }
 
     private void applyInsets() {
+        if (historyButton != null) {
+            ((FrameLayout.LayoutParams) historyButton.getLayoutParams()).topMargin = statusBarHeight + dp(8);
+        }
         if (commentsPanel != null) {
-            int panelHeight = (int) ((AndroidUtilities.displaySize.y) * 0.66f);
+            int bottomInset = getPageBottomInset();
+            int panelHeight = (int) ((AndroidUtilities.displaySize.y) * 0.66f) + bottomInset;
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) commentsPanel.getLayoutParams();
             if (lp.height != panelHeight) {
                 lp.height = panelHeight;
                 commentsPanel.requestLayout();
             }
+            commentsPanel.setBottomInset(bottomInset);
         }
         if (pager != null) {
             for (int i = 0; i < pager.getChildCount(); i++) {
@@ -196,7 +236,11 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     @Override
     public void onResume() {
         super.onResume();
-        FeedController.getInstance(currentAccount).loadFeed(false);
+        // при возврате в приложение ленту НЕ перезагружаем (иначе теряются порядок,
+        // позиция и тексты) — грузим только если её ещё нет
+        if (getPosts().isEmpty()) {
+            FeedController.getInstance(currentAccount).loadFeed(false);
+        }
         updateEmptyView();
         pageShownTime = SystemClock.elapsedRealtime();
         setPageActive(currentPage, true);
@@ -265,7 +309,10 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         ArrayList<FeedController.FeedPost> posts = getPosts();
         if (currentPage >= 0 && currentPage < posts.size() && pageShownTime > 0) {
             FeedController.FeedPost post = posts.get(currentPage);
-            FeedController.getInstance(currentAccount).trackPostDwell(post.dialogId, post.getId(), SystemClock.elapsedRealtime() - pageShownTime, false);
+            int type = FeedController.contentTypeOf(post);
+            String title = post.chat != null ? post.chat.title : null;
+            FeedController.getInstance(currentAccount).trackPostDwell(
+                post.dialogId, post.getId(), SystemClock.elapsedRealtime() - pageShownTime, false, type, title);
         }
     }
 
@@ -426,7 +473,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
 
     @Override
     public void onDislike(FeedController.FeedPost post) {
-        FeedController.getInstance(currentAccount).trackDislike(post.dialogId, post.getId());
+        FeedController.getInstance(currentAccount).trackDislike(post.dialogId, post.getId(), FeedController.contentTypeOf(post));
         if (getParentActivity() != null) {
             BulletinFactory.of(this).createSimpleBulletin(R.raw.chats_infotip,
                 getString(R.string.SmartFeedDisliked)).setDuration(Bulletin.DURATION_SHORT).show();
@@ -497,6 +544,12 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         if (getParentActivity() != null) {
             AndroidUtilities.removeAdjustResize(getParentActivity(), classGuid);
         }
+        if (commentsScrim != null) {
+            commentsScrim.setVisibility(View.GONE);
+        }
+        if (historyButton != null) {
+            historyButton.setVisibility(View.VISIBLE);
+        }
         FeedPageView page = findPageView(currentPage);
         if (page != null) {
             page.setCommentsShrink(0f, 0);
@@ -505,6 +558,12 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
 
     @Override
     public void onCommentsOpened(FeedController.FeedPost post) {
+        if (commentsScrim != null) {
+            commentsScrim.setVisibility(View.VISIBLE);
+        }
+        if (historyButton != null) {
+            historyButton.setVisibility(View.GONE);
+        }
         FeedController.getInstance(currentAccount).trackInteraction(post.dialogId, FeedController.INTERACTION_COMMENTS_OPEN);
     }
 
