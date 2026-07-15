@@ -10926,7 +10926,7 @@
     <string name="SmartFeedViews">%1$s views</string>
     <string name="SmartFeedDisliked">Channel will appear less often</string>
     <string name="SmartFeedHistory">Viewed</string>
-    <string name="SmartFeedHistoryEmpty">You haven't viewed any posts yet</string>
+    <string name="SmartFeedHistoryEmpty">You haven\'t viewed any posts yet</string>
     <string name="SmartFeedHistoryClear">Clear history</string>
     <string name="SmartFeedTypeText">Text</string>
 </resources>
