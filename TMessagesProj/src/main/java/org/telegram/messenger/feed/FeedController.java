@@ -33,7 +33,8 @@ public class FeedController extends BaseController {
     public static final int INTERACTION_FULL_POST_OPEN = 5;
 
     private static final int MAX_CHANNELS = 32;
-    private static final int POSTS_PER_CHANNEL = 8;
+    // 15, чтобы альбом (до 10 медиа) с подписью не обрезался лимитом и подпись попадала в группу
+    private static final int POSTS_PER_CHANNEL = 15;
     private static final int MAX_POST_AGE_SECONDS = 3 * 24 * 60 * 60;
     private static final long RELOAD_INTERVAL_MS = 5 * 60 * 1000L;
     private static final double RATING_HALF_LIFE_DAYS = 7.0;
@@ -87,6 +88,32 @@ public class FeedController extends BaseController {
 
         public boolean hasMedia() {
             return !renderableMedia().isEmpty();
+        }
+
+        /** Сообщение альбома, у которого есть инфо о комментариях (обычно не первое). */
+        public MessageObject commentsMessage() {
+            if (message.messageOwner.replies != null && message.messageOwner.replies.comments) {
+                return message;
+            }
+            if (album != null) {
+                for (int i = 0; i < album.size(); i++) {
+                    TLRPC.MessageReplies r = album.get(i).messageOwner.replies;
+                    if (r != null && r.comments) {
+                        return album.get(i);
+                    }
+                }
+            }
+            return message;
+        }
+
+        public boolean commentsEnabled() {
+            TLRPC.MessageReplies r = commentsMessage().messageOwner.replies;
+            return r != null && r.comments;
+        }
+
+        public int commentsCount() {
+            TLRPC.MessageReplies r = commentsMessage().messageOwner.replies;
+            return r != null ? r.replies : 0;
         }
 
         public String getText() {

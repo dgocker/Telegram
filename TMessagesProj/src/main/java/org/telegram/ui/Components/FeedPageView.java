@@ -56,6 +56,7 @@ public class FeedPageView extends FrameLayout {
         void onShareTelegram(FeedController.FeedPost post);
         void onShareExternal(FeedController.FeedPost post);
         void onOpenFullPost(FeedController.FeedPost post);
+        void onOpenChannel(FeedController.FeedPost post);
     }
 
     private final int currentAccount;
@@ -160,16 +161,17 @@ public class FeedPageView extends FrameLayout {
         });
         mediaContainer.addView(carousel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
 
-        // нижняя треть: канал (всегда виден) + выжимка (может прятаться)
+        // нижняя треть: канал (всегда виден) + выжимка (может прятаться).
+        // без горизонтального паддинга — иначе точки уходят влево; отступы у строк отдельно
         bottomOverlay = new LinearLayout(context);
         bottomOverlay.setOrientation(LinearLayout.VERTICAL);
-        bottomOverlay.setPadding(dp(14), dp(30), dp(72), dp(10));
+        bottomOverlay.setPadding(0, dp(30), 0, dp(10));
         GradientDrawable shade = new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
             new int[]{0xCC000000, 0x66000000, 0x00000000});
         bottomOverlay.setBackground(shade);
         addView(bottomOverlay, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM));
 
-        // точки-индикатор карусели над панелью, по центру
+        // точки-индикатор карусели над панелью, строго по центру экрана
         dotsIndicator = new DotsIndicator(context);
         bottomOverlay.addView(dotsIndicator, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, 16, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 8));
 
@@ -207,10 +209,15 @@ public class FeedPageView extends FrameLayout {
         addView(videoSeekBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 44, Gravity.BOTTOM));
 
         channelRow = new FrameLayout(context);
-        bottomOverlay.addView(channelRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 0, 0, 0, 6));
+        bottomOverlay.addView(channelRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 14, 0, 72, 6));
 
         avatarImageView = new BackupImageView(context);
         avatarImageView.setRoundRadius(dp(18));
+        avatarImageView.setOnClickListener(v -> {
+            if (delegate != null && post != null) {
+                delegate.onOpenChannel(post);
+            }
+        });
         channelRow.addView(avatarImageView, LayoutHelper.createFrame(36, 36, Gravity.LEFT | Gravity.CENTER_VERTICAL));
 
         nameTextView = new TextView(context);
@@ -220,7 +227,12 @@ public class FeedPageView extends FrameLayout {
         nameTextView.setSingleLine(true);
         nameTextView.setEllipsize(TextUtils.TruncateAt.END);
         nameTextView.setShadowLayer(dp(2), 0, dp(1), 0xB3000000);
-        channelRow.addView(nameTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 2, 0, 0));
+        nameTextView.setOnClickListener(v -> {
+            if (delegate != null && post != null) {
+                delegate.onOpenChannel(post);
+            }
+        });
+        channelRow.addView(nameTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 46, 2, 0, 0));
 
         infoTextView = new TextView(context);
         infoTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
@@ -236,7 +248,7 @@ public class FeedPageView extends FrameLayout {
         summaryTextView.setEllipsize(TextUtils.TruncateAt.END);
         summaryTextView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
         summaryTextView.setOnClickListener(v -> setFullTextShown(true));
-        bottomOverlay.addView(summaryTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 6, 0, 0));
+        bottomOverlay.addView(summaryTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 14, 6, 72, 0));
 
         // для постов без медиа текст стоит по центру экрана, а не в нижней трети
         centerTextView = new TextView(context);
@@ -323,10 +335,12 @@ public class FeedPageView extends FrameLayout {
         return button;
     }
 
-    /** Кнопка действия; в состоянии crossed рисует диагональную черту («выключено»). */
+    /** Кнопка действия с тенью иконки; в состоянии crossed рисует диагональную черту. */
     private static class ActionButton extends ImageView {
 
         private final Paint crossPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.ColorFilter shadowFilter = new PorterDuffColorFilter(0x80000000, PorterDuff.Mode.SRC_IN);
+        private final android.graphics.ColorFilter iconFilter = new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN);
         private boolean crossed;
 
         public ActionButton(Context context) {
@@ -334,7 +348,6 @@ public class FeedPageView extends FrameLayout {
             crossPaint.setColor(Color.WHITE);
             crossPaint.setStrokeWidth(dp(2));
             crossPaint.setStrokeCap(Paint.Cap.ROUND);
-            crossPaint.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
         }
 
         public void setCrossed(boolean value) {
@@ -347,7 +360,22 @@ public class FeedPageView extends FrameLayout {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
+            // рисуем иконку сами: сначала тёмная копия со сдвигом (тень), потом белая
+            Drawable d = getDrawable();
+            if (d != null) {
+                int iw = d.getIntrinsicWidth();
+                int ih = d.getIntrinsicHeight();
+                int l = (getWidth() - iw) / 2;
+                int t = (getHeight() - ih) / 2;
+                d.setBounds(l, t, l + iw, t + ih);
+                d.setColorFilter(shadowFilter);
+                canvas.save();
+                canvas.translate(0, dp(1.5f));
+                d.draw(canvas);
+                canvas.restore();
+                d.setColorFilter(iconFilter);
+                d.draw(canvas);
+            }
             if (crossed) {
                 canvas.drawLine(dp(13), dp(13), getWidth() - dp(13), getHeight() - dp(13), crossPaint);
             }
@@ -423,7 +451,15 @@ public class FeedPageView extends FrameLayout {
                 public void onError(VideoPlayer player, Exception e) {}
 
                 @Override
-                public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {}
+                public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
+                    if (videoItem == boundItem && width > 0 && height > 0) {
+                        float aspect = width * pixelWidthHeightRatio / (float) height;
+                        if (unappliedRotationDegrees == 90 || unappliedRotationDegrees == 270) {
+                            aspect = 1f / aspect;
+                        }
+                        boundItem.setVideoAspect(aspect);
+                    }
+                }
 
                 @Override
                 public void onRenderedFirstFrame() {
@@ -515,11 +551,11 @@ public class FeedPageView extends FrameLayout {
         mediaMessages.clear();
         mediaMessages.addAll(post.renderableMedia());
 
-        // комментарии доступны только у постов с привязанной discussion-группой
-        TLRPC.MessageReplies replies = post.message.messageOwner.replies;
-        commentsEnabled = replies != null && replies.comments;
+        // комментарии доступны только у постов с привязанной discussion-группой;
+        // у альбома флаг/счётчик лежат не на первом сообщении
+        commentsEnabled = post.commentsEnabled();
         commentsButton.setCrossed(!commentsEnabled);
-        int commentsCount = commentsEnabled ? replies.replies : 0;
+        int commentsCount = commentsEnabled ? post.commentsCount() : 0;
         commentsCountView.setVisibility(commentsCount > 0 ? VISIBLE : GONE);
         if (commentsCount > 0) {
             commentsCountView.setText(LocaleController.formatShortNumber(commentsCount, null));
@@ -701,6 +737,7 @@ public class FeedPageView extends FrameLayout {
         private Drawable playDrawable;
         private boolean showPlay;
         private boolean isVideo;
+        private float videoAspect;
 
         public MediaItemView(Context context) {
             super(context);
@@ -728,13 +765,43 @@ public class FeedPageView extends FrameLayout {
         android.view.TextureView ensureTextureView() {
             if (textureView == null) {
                 textureView = new android.view.TextureView(getContext());
-                addView(textureView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+                addView(textureView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER));
             }
             textureView.setVisibility(VISIBLE);
             textureView.setAlpha(0f); // покажем по первому кадру, чтобы не мигало чёрным
             showPlay = false;
+            requestLayout();
             invalidate();
             return textureView;
+        }
+
+        /** Вписываем видео по его соотношению сторон (letterbox), как фото-постер. */
+        void setVideoAspect(float aspect) {
+            if (aspect > 0 && Math.abs(videoAspect - aspect) > 0.001f) {
+                videoAspect = aspect;
+                requestLayout();
+            }
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            super.onLayout(changed, left, top, right, bottom);
+            if (textureView != null && videoAspect > 0) {
+                int vw = getWidth();
+                int vh = getHeight();
+                if (vw > 0 && vh > 0) {
+                    int w = vw, h = (int) (vw / videoAspect);
+                    if (h > vh) {
+                        h = vh;
+                        w = (int) (vh * videoAspect);
+                    }
+                    int cx = (vw - w) / 2, cy = (vh - h) / 2;
+                    textureView.measure(
+                        MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+                    textureView.layout(cx, cy, cx + w, cy + h);
+                }
+            }
         }
 
         void onVideoRendered() {
@@ -807,11 +874,13 @@ public class FeedPageView extends FrameLayout {
     private static class DotsIndicator extends View {
 
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private int count;
         private int selected;
 
         public DotsIndicator(Context context) {
             super(context);
+            shadowPaint.setColor(0x66000000);
         }
 
         public void setCount(int value) {
@@ -835,8 +904,11 @@ public class FeedPageView extends FrameLayout {
         protected void onDraw(Canvas canvas) {
             float cy = getHeight() / 2f;
             for (int i = 0; i < count; i++) {
+                float cx = dp(7) + i * dp(14);
+                float r = dp(i == selected ? 3.5f : 3f);
+                canvas.drawCircle(cx, cy + dp(1), r + dp(0.6f), shadowPaint); // тень
                 paint.setColor(i == selected ? Color.WHITE : 0x80FFFFFF);
-                canvas.drawCircle(dp(7) + i * dp(14), cy, dp(i == selected ? 3.5f : 3f), paint);
+                canvas.drawCircle(cx, cy, r, paint);
             }
         }
     }

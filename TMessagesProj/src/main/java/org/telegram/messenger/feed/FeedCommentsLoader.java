@@ -80,15 +80,18 @@ public class FeedCommentsLoader {
         discussionLoading = true;
         TLRPC.TL_messages_getDiscussionMessage req = new TLRPC.TL_messages_getDiscussionMessage();
         req.peer = MessagesController.getInstance(currentAccount).getInputPeer(post.dialogId);
-        req.msg_id = post.getId();
+        // у альбома комментарии привязаны к сообщению с replies-инфо, не к первому
+        req.msg_id = post.commentsMessage().getId();
         ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
             discussionLoading = false;
             if (response instanceof TLRPC.TL_messages_discussionMessage) {
                 TLRPC.TL_messages_discussionMessage res = (TLRPC.TL_messages_discussionMessage) response;
                 MessagesController.getInstance(currentAccount).putUsers(res.users, false);
                 MessagesController.getInstance(currentAccount).putChats(res.chats, false);
+                // топ треда = ПОСЛЕДНЕЕ непустое (как в ChatActivity); для альбомов
+                // первое сообщение не то, и getReplies по нему возвращает пусто
                 TLRPC.Message top = null;
-                for (int i = 0; i < res.messages.size(); i++) {
+                for (int i = res.messages.size() - 1; i >= 0; i--) {
                     TLRPC.Message msg = res.messages.get(i);
                     if (!(msg instanceof TLRPC.TL_messageEmpty)) {
                         top = msg;
@@ -146,6 +149,9 @@ public class FeedCommentsLoader {
                     }
                 }
             } else {
+                if (error != null && error.text != null && error.text.startsWith("CHANNEL_PRIVATE") && comments.isEmpty()) {
+                    unavailable = true;
+                }
                 endReached = true;
             }
             delegate.onUpdated();

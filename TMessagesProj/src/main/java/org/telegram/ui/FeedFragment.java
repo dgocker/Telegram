@@ -536,6 +536,14 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     }
 
     @Override
+    public void onOpenChannel(FeedController.FeedPost post) {
+        Bundle args = new Bundle();
+        args.putLong("chat_id", -post.dialogId);
+        args.putInt("message_id", post.getId());
+        presentFragment(new ChatActivity(args));
+    }
+
+    @Override
     public void onOpenFullPost(FeedController.FeedPost post) {
         FeedController.getInstance(currentAccount).trackInteraction(post.dialogId, FeedController.INTERACTION_FULL_POST_OPEN);
         showDialog(new FeedPostSheet(this, post));
