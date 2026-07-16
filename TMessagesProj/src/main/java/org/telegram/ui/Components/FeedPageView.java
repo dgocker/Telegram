@@ -561,6 +561,9 @@ public class FeedPageView extends FrameLayout {
 
         mediaMessages.clear();
         mediaMessages.addAll(post.renderableMedia());
+        android.util.Log.d("SMARTFEED", "setPost id=" + post.getId()
+            + " album=" + (post.album != null ? post.album.size() : 0)
+            + " shown=" + mediaMessages.size() + " textLen=" + post.getText().length());
 
         // комментарии доступны только у постов с привязанной discussion-группой;
         // у альбома флаг/счётчик лежат не на первом сообщении

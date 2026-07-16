@@ -426,6 +426,19 @@ public class FeedController extends BaseController {
 
             for (FeedPost post : fresh) {
                 rebuildAlbum(post);
+                if (post.album != null) {
+                    StringBuilder types = new StringBuilder();
+                    for (MessageObject mo : post.album) {
+                        types.append(mo.getId()).append(":")
+                            .append(mo.isVideo() ? "V" : mo.isPhoto() ? "P" : "?")
+                            .append(mo.photoThumbs != null && !mo.photoThumbs.isEmpty() ? "t" : "-")
+                            .append(TextUtils.isEmpty(mo.messageOwner.message) ? "" : "[cap]")
+                            .append(" ");
+                    }
+                    android.util.Log.d("SMARTFEED", "album gid=" + post.message.messageOwner.grouped_id
+                        + " items=" + post.album.size() + " renderable=" + post.renderableMedia().size()
+                        + " textLen=" + post.getText().length() + " | " + types);
+                }
                 if (TextUtils.isEmpty(post.getText()) && !post.hasMedia()) {
                     continue; // нечего показать
                 }
