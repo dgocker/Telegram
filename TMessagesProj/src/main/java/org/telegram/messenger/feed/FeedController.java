@@ -66,6 +66,8 @@ public class FeedController extends BaseController {
         public MessageObject.GroupedMessages groupedMessages;
         public float score;
         public boolean muted;
+        /** Подпись из отдельного соседнего текстового сообщения (у альбома нет своей). */
+        public String externalCaption;
 
         public int getId() {
             return message.getId();
@@ -125,6 +127,9 @@ public class FeedController extends BaseController {
                         return caption;
                     }
                 }
+            }
+            if (!TextUtils.isEmpty(externalCaption)) {
+                return externalCaption;
             }
             return "";
         }
@@ -424,20 +429,15 @@ public class FeedController extends BaseController {
                 fresh.add(post);
             }
 
+            // сперва склеиваем альбомы, затем подхватываем отдельные текстовые сообщения-подписи
             for (FeedPost post : fresh) {
                 rebuildAlbum(post);
-                if (post.album != null) {
-                    StringBuilder types = new StringBuilder();
-                    for (MessageObject mo : post.album) {
-                        types.append(mo.getId()).append(":")
-                            .append(mo.isVideo() ? "V" : mo.isPhoto() ? "P" : "?")
-                            .append(mo.photoThumbs != null && !mo.photoThumbs.isEmpty() ? "t" : "-")
-                            .append(TextUtils.isEmpty(mo.messageOwner.message) ? "" : "[cap]")
-                            .append(" ");
-                    }
-                    android.util.Log.d("SMARTFEED", "album gid=" + post.message.messageOwner.grouped_id
-                        + " items=" + post.album.size() + " renderable=" + post.renderableMedia().size()
-                        + " textLen=" + post.getText().length() + " | " + types);
+            }
+            mergeSeparateCaptions(fresh);
+
+            for (FeedPost post : fresh) {
+                if (post == null) {
+                    continue; // текст ушёл подписью к соседнему альбому — отдельной карточкой не показываем
                 }
                 if (TextUtils.isEmpty(post.getText()) && !post.hasMedia()) {
                     continue; // нечего показать
@@ -476,6 +476,56 @@ public class FeedController extends BaseController {
                 post.groupedMessages = null;
             }
         }
+    }
+
+    /** Медиа и его описание нередко приходят двумя сообщениями — такой зазор считаем «одним постом». */
+    private static final int CAPTION_LINK_MAX_GAP_SECONDS = 90;
+
+    /**
+     * Некоторые каналы постят альбом (часто без подписи) и описание отдельным
+     * текстовым сообщением. Привязываем такой текст к ближайшему по времени
+     * медиа-посту того же канала без своей подписи, а отдельную карточку убираем.
+     */
+    private void mergeSeparateCaptions(ArrayList<FeedPost> fresh) {
+        for (int i = 0; i < fresh.size(); i++) {
+            FeedPost text = fresh.get(i);
+            if (text == null || text.hasMedia() || TextUtils.isEmpty(text.getText())) {
+                continue; // кандидат-подпись — только текст, без медиа
+            }
+            FeedPost target = findCaptionTarget(fresh, i, text);
+            if (target != null) {
+                target.externalCaption = text.getText();
+                fresh.set(i, null); // отдельную текстовую карточку больше не показываем
+            }
+        }
+    }
+
+    private FeedPost findCaptionTarget(ArrayList<FeedPost> fresh, int textIndex, FeedPost text) {
+        final long channel = text.dialogId;
+        final int textDate = text.message.messageOwner.date;
+        FeedPost best = null;
+        int bestGap = Integer.MAX_VALUE;
+        for (int j = 0; j < fresh.size(); j++) {
+            if (j == textIndex) {
+                continue;
+            }
+            FeedPost cand = fresh.get(j);
+            if (cand == null || cand.dialogId != channel) {
+                continue;
+            }
+            if (!cand.hasMedia() || !TextUtils.isEmpty(cand.getText())) {
+                continue; // цель — медиа-пост без собственной подписи
+            }
+            int gap = Math.abs(cand.message.messageOwner.date - textDate);
+            if (gap > CAPTION_LINK_MAX_GAP_SECONDS) {
+                continue;
+            }
+            if (gap < bestGap) {
+                bestGap = gap;
+                best = cand;
+            }
+        }
+        return best;
     }
 
     private static long feedKey(long dialogId, int messageId) {
