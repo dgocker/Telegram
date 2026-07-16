@@ -116,6 +116,27 @@ public class FeedPageView extends FrameLayout {
 
         mediaContainer = new FrameLayout(context);
         addView(mediaContainer, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+        // для текстовых постов (нет MediaItemView) жесты ловим здесь:
+        // тап открывает/закрывает полный текст, долгое нажатие прячет оверлеи
+        mediaContainer.setOnClickListener(v -> {
+            if (fullTextShown) {
+                setFullTextShown(false);
+            } else if (post != null && mediaMessages.isEmpty() && !TextUtils.isEmpty(post.getText())) {
+                setFullTextShown(true);
+            }
+        });
+        mediaContainer.setOnLongClickListener(v -> {
+            setOverlaysHidden(true);
+            mediaContainer.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            return true;
+        });
+        mediaContainer.setOnTouchListener((v, e) -> {
+            int a = e.getActionMasked();
+            if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && overlaysHiddenByTouch) {
+                setOverlaysHidden(false);
+            }
+            return false;
+        });
 
         carousel = new RecyclerView(context);
         carousel.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false));
@@ -134,29 +155,6 @@ public class FeedPageView extends FrameLayout {
                         updateActiveVideo();
                     }
                 }
-            }
-        });
-        // пока юзер листает галерею — текст не мешает; отпустил — вернулся
-        carousel.addOnItemTouchListener(new RecyclerView.OnItemTouchListener() {
-            @Override
-            public boolean onInterceptTouchEvent(RecyclerView rv, MotionEvent e) {
-                if (mediaMessages.size() > 1) {
-                    if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                        AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
-                        setOverlaysHidden(true);
-                    } else if (e.getActionMasked() == MotionEvent.ACTION_UP || e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                        AndroidUtilities.runOnUIThread(restoreOverlaysRunnable, 1000);
-                    }
-                }
-                return false;
-            }
-
-            @Override
-            public void onTouchEvent(RecyclerView rv, MotionEvent e) {
-            }
-
-            @Override
-            public void onRequestDisallowInterceptTouchEvent(boolean disallow) {
             }
         });
         mediaContainer.addView(carousel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
@@ -554,6 +552,7 @@ public class FeedPageView extends FrameLayout {
         bottomOverlay.setVisibility(VISIBLE);
         bottomOverlay.setAlpha(1f);
         summaryTextView.setAlpha(1f);
+        centerTextView.setAlpha(1f);
         buttonsColumn.setVisibility(VISIBLE);
         buttonsColumn.setAlpha(1f);
         dotsIndicator.setAlpha(1f);
@@ -686,14 +685,16 @@ public class FeedPageView extends FrameLayout {
         }
     }
 
+    /** Долгое нажатие по экрану — спрятать всё (текст, кнопки, шапку канала, точки). */
     private void setOverlaysHidden(boolean hidden) {
         if (overlaysHiddenByTouch == hidden) {
             return;
         }
         overlaysHiddenByTouch = hidden;
         float alpha = hidden ? 0f : 1f;
-        // прячем только текст-выжимку и кнопки; шапка канала остаётся видимой всегда
-        summaryTextView.animate().alpha(alpha).setDuration(180).start();
+        // bottomOverlay = шапка канала + текст + точки; centerTextView и кнопки — отдельно
+        bottomOverlay.animate().alpha(alpha).setDuration(180).start();
+        centerTextView.animate().alpha(alpha).setDuration(180).start();
         buttonsColumn.animate().alpha(alpha).setDuration(180).start();
     }
 
@@ -761,17 +762,27 @@ public class FeedPageView extends FrameLayout {
                     setFullTextShown(false);
                     return;
                 }
-                if (overlaysHiddenByTouch) {
-                    AndroidUtilities.cancelRunOnUIThread(restoreOverlaysRunnable);
-                    setOverlaysHidden(false);
-                    return;
-                }
                 // тап по видео — пауза/воспроизведение (полный текст только по тапу на текст)
                 if (isVideo && videoItem == this) {
                     toggleVideoPlayback();
                 }
             });
+            // долгое нажатие по экрану прячет оверлеи (текст, кнопки, шапку); отпустил — вернул
+            setOnLongClickListener(v -> {
+                setOverlaysHidden(true);
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                return true;
+            });
             setWillNotDraw(false);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            int a = event.getActionMasked();
+            if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && overlaysHiddenByTouch) {
+                setOverlaysHidden(false);
+            }
+            return super.onTouchEvent(event);
         }
 
         android.view.TextureView ensureTextureView() {
@@ -869,12 +880,13 @@ public class FeedPageView extends FrameLayout {
         @Override
         protected void dispatchDraw(Canvas canvas) {
             super.dispatchDraw(canvas);
-            // play-иконка поверх постера/видео
+            // play-иконка поверх постера/видео, крупная (×5)
             if (showPlay && playDrawable != null) {
-                final int w = playDrawable.getIntrinsicWidth();
-                final int h = playDrawable.getIntrinsicHeight();
+                final int w = playDrawable.getIntrinsicWidth() * 5;
+                final int h = playDrawable.getIntrinsicHeight() * 5;
                 final int cx = getWidth() / 2;
                 final int cy = getHeight() / 2;
+                playDrawable.setAlpha(220);
                 playDrawable.setBounds(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
                 playDrawable.draw(canvas);
             }

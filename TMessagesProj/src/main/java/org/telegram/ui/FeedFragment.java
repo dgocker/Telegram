@@ -380,40 +380,53 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         return PRELOAD_AHEAD;
     }
 
+    // видео, поставленные на фоновую загрузку — чтобы отменить при пролистывании мимо
+    private final ArrayList<TLRPC.Document> prefetchVideos = new ArrayList<>();
+
     private void preloadAhead(int position) {
         ArrayList<FeedController.FeedPost> posts = getPosts();
         clearPrefetch();
         final int depth = prefetchDepth();
+        final boolean wifi = org.telegram.messenger.ApplicationLoader.isConnectedToWiFi();
         for (int offset = 1; offset <= depth; offset++) {
             int index = position + offset;
             if (index >= posts.size()) {
                 break;
             }
-            FeedController.FeedPost post = posts.get(index);
-            prefetchMedia(post, offset);
+            prefetchMedia(posts.get(index), offset, wifi);
         }
     }
 
-    private void prefetchMedia(FeedController.FeedPost post, int offset) {
-        ArrayList<MessageObject> media = post.album;
-        if (media == null) {
-            if (post.message.photoThumbs == null || post.message.photoThumbs.isEmpty()) {
-                return;
-            }
-            media = new ArrayList<>();
-            media.add(post.message);
-        }
+    private void prefetchMedia(FeedController.FeedPost post, int offset, boolean wifi) {
+        ArrayList<MessageObject> media = post.album != null ? post.album
+            : new ArrayList<>(java.util.Collections.singletonList(post.message));
         final boolean slow = org.telegram.messenger.ApplicationLoader.isConnectionSlow();
-        final int mediaCount = slow ? 1 : Math.min(2, media.size());
-        for (int i = 0; i < Math.min(mediaCount, media.size()); i++) {
+        final int photoCount = slow ? 1 : Math.min(2, media.size());
+        int photosDone = 0;
+        for (int i = 0; i < media.size(); i++) {
             MessageObject messageObject = media.get(i);
             if (messageObject.isVideo()) {
-                continue; // видео стримится автоплеем при показе
+                // видео следующего поста буферим заранее (низкий приоритет), только не на медленной сети
+                if (offset <= 2 && !slow && i == 0) {
+                    TLRPC.Document doc = messageObject.getDocument();
+                    if (doc != null && !isVideoCached(doc)) {
+                        FileLoader.getInstance(currentAccount).loadFile(doc, messageObject, FileLoader.PRIORITY_LOW, 1);
+                        prefetchVideos.add(doc);
+                    }
+                }
+                continue;
             }
-            // на медленной сети дальним постам качаем уменьшенный размер — полный догрузится при показе
-            final int sizePx = slow && offset > 1 ? 640 : AndroidUtilities.getPhotoSize();
+            if (photosDone >= photoCount || messageObject.photoThumbs == null || messageObject.photoThumbs.isEmpty()) {
+                continue;
+            }
+            // ближним постам и на WiFi — полный размер; дальним/медленным — уменьшенный (полный догрузится при показе)
+            final int sizePx = (wifi || offset == 1) ? AndroidUtilities.getPhotoSize() : 640;
             TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, sizePx);
             if (photoSize == null) {
+                continue;
+            }
+            // уже в кэше — не префетчим
+            if (FileLoader.getInstance(currentAccount).getPathToAttach(photoSize, true).exists()) {
                 continue;
             }
             ImageReceiver receiver = new ImageReceiver();
@@ -428,10 +441,16 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             });
             receiver.setImage(ImageLocation.getForObject(photoSize, messageObject.photoThumbsObject), null, null, null, photoSize.size, null, messageObject, 1);
             prefetchReceivers.add(receiver);
+            photosDone++;
         }
-        while (prefetchReceivers.size() > 8) {
+        while (prefetchReceivers.size() > 10) {
             prefetchReceivers.remove(0).clearImage();
         }
+    }
+
+    private boolean isVideoCached(TLRPC.Document doc) {
+        java.io.File f = FileLoader.getInstance(currentAccount).getPathToAttach(doc, true);
+        return f != null && f.exists();
     }
 
     private void clearPrefetch() {
@@ -439,6 +458,27 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             prefetchReceivers.get(i).clearImage();
         }
         prefetchReceivers.clear();
+        // отменяем фоновую загрузку видео, мимо которых пролистнули, КРОМЕ активного —
+        // его сейчас стримит плеер, отмена вызвала бы ре-буфер/статтер
+        TLRPC.Document activeDoc = currentVideoDoc();
+        for (int i = 0; i < prefetchVideos.size(); i++) {
+            TLRPC.Document doc = prefetchVideos.get(i);
+            if (doc != activeDoc) {
+                FileLoader.getInstance(currentAccount).cancelLoadFile(doc);
+            }
+        }
+        prefetchVideos.clear();
+    }
+
+    private TLRPC.Document currentVideoDoc() {
+        ArrayList<FeedController.FeedPost> posts = getPosts();
+        if (currentPage >= 0 && currentPage < posts.size()) {
+            MessageObject m = posts.get(currentPage).message;
+            if (m != null && m.isVideo()) {
+                return m.getDocument();
+            }
+        }
+        return null;
     }
 
     /* Выжимки */
