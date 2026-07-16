@@ -288,4 +288,5 @@
     <string name="SmartFeedHistoryEmpty">Вы ещё не смотрели посты</string>
     <string name="SmartFeedHistoryClear">Очистить историю</string>
     <string name="SmartFeedTypeText">Текст</string>
+    <string name="SmartFeedAllSeen">Вы всё просмотрели</string>
 </resources>

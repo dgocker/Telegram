@@ -10929,4 +10929,5 @@
     <string name="SmartFeedHistoryEmpty">You haven\'t viewed any posts yet</string>
     <string name="SmartFeedHistoryClear">Clear history</string>
     <string name="SmartFeedTypeText">Text</string>
+    <string name="SmartFeedAllSeen">You\'ve seen everything for now</string>
 </resources>

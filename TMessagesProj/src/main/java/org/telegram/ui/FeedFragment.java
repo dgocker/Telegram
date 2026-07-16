@@ -265,19 +265,23 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     @Override
     public void didReceivedNotification(int id, int account, Object... args) {
         if (id == NotificationCenter.smartFeedDidLoad) {
-            currentPage = -1;
+            // append (догрузка) не сбрасывает позицию; сброс — только при первичной загрузке
+            boolean firstLoad = currentPage < 0 || currentPage >= getPosts().size();
             if (adapter != null) {
                 adapter.notifyDataSetChanged();
             }
             updateEmptyView();
-            AndroidUtilities.runOnUIThread(() -> {
-                int position = layoutManager != null ? layoutManager.findFirstCompletelyVisibleItemPosition() : -1;
-                if (position >= 0) {
-                    onPageSelected(position);
-                } else if (!getPosts().isEmpty()) {
-                    onPageSelected(0);
-                }
-            });
+            if (firstLoad) {
+                currentPage = -1;
+                AndroidUtilities.runOnUIThread(() -> {
+                    int position = layoutManager != null ? layoutManager.findFirstCompletelyVisibleItemPosition() : -1;
+                    if (position >= 0) {
+                        onPageSelected(position);
+                    } else if (!getPosts().isEmpty()) {
+                        onPageSelected(0);
+                    }
+                });
+            }
         } else if (id == NotificationCenter.dialogsNeedReload) {
             if (getPosts().isEmpty()) {
                 FeedController.getInstance(currentAccount).loadFeed(false);
@@ -293,9 +297,12 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         if (emptyView == null) {
             return;
         }
-        if (FeedController.getInstance(currentAccount).isLoading() || !FeedController.getInstance(currentAccount).isLoadedOnce()) {
+        FeedController controller = FeedController.getInstance(currentAccount);
+        if (controller.isLoading() || !controller.isLoadedOnce()) {
             emptyView.showProgress();
         } else {
+            emptyView.setText(getString(controller.isExhausted() && getPosts().isEmpty()
+                ? R.string.SmartFeedAllSeen : R.string.SmartFeedNoPosts));
             emptyView.showTextView();
         }
     }
@@ -312,6 +319,10 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         pageShownTime = SystemClock.elapsedRealtime();
         setPageActive(position, true);
         preloadAhead(position);
+        // бесконечная лента: приближаемся к концу — догружаем
+        if (position >= getPosts().size() - 5) {
+            FeedController.getInstance(currentAccount).loadMore();
+        }
     }
 
     private void trackCurrentDwell() {

@@ -295,18 +295,30 @@ public class FeedPageView extends FrameLayout {
                 delegate.onDislike(post);
             }
         });
-        commentsButton = addActionButton(R.drawable.msg_discussion, v -> {
+        // кнопка комментов + счётчик — единая кликабельная область (иначе счётчик
+        // перекрывал низ кнопки и глотал тапы → «открывается не с первого раза»)
+        LinearLayout commentsGroup = new LinearLayout(context);
+        commentsGroup.setOrientation(LinearLayout.VERTICAL);
+        commentsGroup.setGravity(Gravity.CENTER_HORIZONTAL);
+        commentsGroup.setOnClickListener(v -> {
             if (delegate != null && post != null && commentsEnabled) {
                 delegate.onOpenComments(post);
             }
         });
+        commentsButton = new ActionButton(context);
+        commentsButton.setScaleType(ImageView.ScaleType.CENTER);
+        commentsButton.setImageResource(R.drawable.msg_discussion);
+        commentsButton.setColorFilter(new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+        commentsButton.setDuplicateParentStateEnabled(true);
+        commentsGroup.addView(commentsButton, LayoutHelper.createLinear(48, 48, Gravity.CENTER_HORIZONTAL));
         commentsCountView = new TextView(context);
         commentsCountView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
         commentsCountView.setTypeface(AndroidUtilities.bold());
         commentsCountView.setTextColor(Color.WHITE);
         commentsCountView.setGravity(Gravity.CENTER_HORIZONTAL);
         commentsCountView.setShadowLayer(dp(2), 0, dp(1), 0x66000000);
-        buttonsColumn.addView(commentsCountView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, -6, 0, 4));
+        commentsGroup.addView(commentsCountView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, -4, 0, 0));
+        buttonsColumn.addView(commentsGroup, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 6));
         addActionButton(R.drawable.msg_forward, v -> {
             if (delegate != null && post != null) {
                 delegate.onShareTelegram(post);

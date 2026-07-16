@@ -35,8 +35,6 @@ public class FeedController extends BaseController {
     private static final int MAX_CHANNELS = 32;
     // 15, чтобы альбом (до 10 медиа) с подписью не обрезался лимитом и подпись попадала в группу
     private static final int POSTS_PER_CHANNEL = 15;
-    private static final int MAX_POST_AGE_SECONDS = 3 * 24 * 60 * 60;
-    private static final long RELOAD_INTERVAL_MS = 5 * 60 * 1000L;
     private static final double RATING_HALF_LIFE_DAYS = 7.0;
     private static final float MAX_RATING = 50f;
     private static final float MIN_RATING = -30f;
@@ -159,10 +157,24 @@ public class FeedController extends BaseController {
         }
     }
 
+    /* Бесконечная лента: показанное (posts, append-only) + пул кандидатов + курсоры каналов */
+
+    private static final int BATCH = 12;             // сколько постов выдаём за раз
+    private static final int POOL_LOW = 25;          // ниже — догружаем старые посты каналов
+    private static final int PAGE_MAX_AGE_SECONDS = 45 * 24 * 60 * 60; // не глубже ~45 дней
+
     private final ArrayList<FeedPost> posts = new ArrayList<>();
+    private final ArrayList<FeedPost> candidatePool = new ArrayList<>();
+    private final ArrayList<Long> channelIds = new ArrayList<>();
+    private final HashMap<Long, Integer> oldestFetchedId = new HashMap<>();
+    private final java.util.HashSet<Long> channelExhausted = new java.util.HashSet<>();
+    private final java.util.HashSet<Long> feedKeys = new java.util.HashSet<>();      // O(1) дедуп (пул+показанные)
+    private final HashMap<Long, FeedPost> poolGroups = new HashMap<>();              // grouped_id → пост (склейка альбомов между страницами)
+
     private boolean loading;
     private boolean loadedOnce;
-    private long lastLoadTime;
+    private boolean exhaustedAll;
+    private long lastRefreshTime;
 
     public ArrayList<FeedPost> getPosts() {
         return posts;
@@ -176,16 +188,12 @@ public class FeedController extends BaseController {
         return loadedOnce;
     }
 
-    public void loadFeed(boolean force) {
-        if (loading) {
-            return;
-        }
-        // показанную ленту НЕ пересобираем при возврате в приложение — иначе теряются
-        // порядок, позиция и тексты постов. Обновляем только пустую ленту либо по force.
-        if (!force && loadedOnce && !posts.isEmpty()) {
-            return;
-        }
+    public boolean isExhausted() {
+        return exhaustedAll;
+    }
 
+    private void refreshChannelList() {
+        channelIds.clear();
         final ArrayList<TLRPC.Dialog> dialogs = getMessagesController().getAllDialogs();
         final ArrayList<TLRPC.Dialog> channelDialogs = new ArrayList<>();
         for (int i = 0; i < dialogs.size(); i++) {
@@ -203,75 +211,206 @@ public class FeedController extends BaseController {
             Collections.sort(channelDialogs, (a, b) -> Integer.compare(b.last_message_date, a.last_message_date));
             channelDialogs.subList(MAX_CHANNELS, channelDialogs.size()).clear();
         }
-        if (channelDialogs.isEmpty()) {
+        for (TLRPC.Dialog d : channelDialogs) {
+            channelIds.add(d.id);
+        }
+    }
+
+    /** Первичная загрузка (или обновление пустой ленты). */
+    public void loadFeed(boolean force) {
+        if (loading) {
+            return;
+        }
+        // показанную ленту не пересобираем при возврате — иначе теряются порядок и позиция
+        if (!force && loadedOnce && !posts.isEmpty()) {
+            return;
+        }
+        refreshChannelList();
+        if (channelIds.isEmpty()) {
             loadedOnce = true;
-            lastLoadTime = System.currentTimeMillis();
+            exhaustedAll = true;
             posts.clear();
             getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
             return;
         }
+        posts.clear();
+        candidatePool.clear();
+        feedKeys.clear();
+        poolGroups.clear();
+        oldestFetchedId.clear();
+        channelExhausted.clear();
+        exhaustedAll = false;
+        // грузим самые свежие посты каждого канала
+        fetchPages(true, () -> {
+            try {
+                placeNextBatch();
+                loadedOnce = true;
+                lastRefreshTime = System.currentTimeMillis();
+                checkExhaustion();
+            } finally {
+                loading = false;
+            }
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            // первая загрузка ничего не разместила (всё просмотрено) — идём глубже
+            if (posts.isEmpty() && !exhaustedAll) {
+                loadMore();
+            }
+        });
+    }
 
-        loading = true;
-        final ArrayList<TLRPC.Message> allMessages = new ArrayList<>();
-        final int[] pending = {channelDialogs.size()};
+    /** Догрузка при приближении к концу ленты. */
+    public void loadMore() {
+        if (loading || exhaustedAll) {
+            return;
+        }
+        if (countPlaceable() >= BATCH) {
+            placeNextBatch();
+            checkExhaustion();
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            return;
+        }
+        if (allChannelsExhausted()) {
+            placeNextBatch();
+            checkExhaustion();
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            return;
+        }
+        // пул иссякает — тянем более старые посты каналов
+        fetchPages(false, () -> {
+            try {
+                placeNextBatch();
+                checkExhaustion();
+            } finally {
+                loading = false;
+            }
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            // лента ещё пуста (всё просмотрено), но старое не кончилось — углубляемся дальше
+            if (posts.isEmpty() && !exhaustedAll) {
+                loadMore();
+            }
+        });
+    }
 
-        for (int i = 0; i < channelDialogs.size(); i++) {
-            final long dialogId = channelDialogs.get(i).id;
-            TLRPC.TL_messages_getHistory req = new TLRPC.TL_messages_getHistory();
-            req.peer = getMessagesController().getInputPeer(dialogId);
-            req.limit = POSTS_PER_CHANNEL;
-            req.offset_id = 0;
-            getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                try {
-                    if (response instanceof TLRPC.messages_Messages) {
-                        TLRPC.messages_Messages res = (TLRPC.messages_Messages) response;
-                        getMessagesController().putUsers(res.users, false);
-                        getMessagesController().putChats(res.chats, false);
-                        allMessages.addAll(res.messages);
-                    }
-                } catch (Throwable e) {
-                    FileLog.e(e);
-                }
-                pending[0]--;
-                if (pending[0] == 0) {
-                    processLoadedMessages(allMessages);
-                }
-            }));
+    /** Лента исчерпана: нечего разместить, пул пуст и все каналы отдали всё. */
+    private void checkExhaustion() {
+        if (countPlaceable() == 0 && allChannelsExhausted()) {
+            exhaustedAll = true;
         }
     }
 
-    private void processLoadedMessages(ArrayList<TLRPC.Message> messages) {
+    private boolean allChannelsExhausted() {
+        return channelExhausted.size() >= channelIds.size();
+    }
+
+    private int countPlaceable() {
+        int c = 0;
+        for (FeedPost p : candidatePool) {
+            if (!isPostSeen(p.dialogId, p.getId())) {
+                c++;
+            }
+        }
+        return c;
+    }
+
+    /** Запросить по странице у каждого канала (initial=свежие, иначе — старее курсора). */
+    private void fetchPages(boolean initial, Runnable onComplete) {
+        final ArrayList<Long> targets = new ArrayList<>();
+        for (Long id : channelIds) {
+            if (!initial && channelExhausted.contains(id)) {
+                continue;
+            }
+            targets.add(id);
+        }
+        if (targets.isEmpty()) {
+            onComplete.run();
+            return;
+        }
+        loading = true;
+        final ArrayList<TLRPC.Message> collected = new ArrayList<>();
+        final int[] pending = {targets.size()};
+        final Runnable[] onOne = new Runnable[1];
+        onOne[0] = () -> {
+            pending[0]--;
+            if (pending[0] == 0) {
+                buildCandidates(collected);
+                onComplete.run();
+            }
+        };
+        for (Long dialogId : targets) {
+            try {
+                TLRPC.TL_messages_getHistory req = new TLRPC.TL_messages_getHistory();
+                req.peer = getMessagesController().getInputPeer(dialogId);
+                req.limit = POSTS_PER_CHANNEL;
+                req.offset_id = initial ? 0 : oldestFetchedId.getOrDefault(dialogId, 0);
+                getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        if (response instanceof TLRPC.messages_Messages) {
+                            TLRPC.messages_Messages res = (TLRPC.messages_Messages) response;
+                            getMessagesController().putUsers(res.users, false);
+                            getMessagesController().putChats(res.chats, false);
+                            if (res.messages.isEmpty()) {
+                                channelExhausted.add(dialogId);
+                            } else {
+                                collected.addAll(res.messages);
+                            }
+                        } else {
+                            channelExhausted.add(dialogId);
+                        }
+                    } catch (Throwable e) {
+                        FileLog.e(e);
+                    }
+                    onOne[0].run();
+                }));
+            } catch (Throwable e) {
+                // синхронная ошибка отправки не должна подвесить pending → loading залипнет
+                FileLog.e(e);
+                channelExhausted.add(dialogId);
+                onOne[0].run();
+            }
+        }
+    }
+
+    /** Группируем альбомы (в т.ч. между страницами), фильтруем, скорим, кладём в пул. */
+    private void buildCandidates(ArrayList<TLRPC.Message> messages) {
         try {
             final int now = getConnectionsManager().getCurrentTime();
-            final HashMap<Long, FeedPost> byGroup = new HashMap<>();
-            final ArrayList<FeedPost> newPosts = new ArrayList<>();
+            final ArrayList<FeedPost> fresh = new ArrayList<>();
 
             for (int i = 0; i < messages.size(); i++) {
                 TLRPC.Message msg = messages.get(i);
-                if (msg instanceof TLRPC.TL_messageService || msg instanceof TLRPC.TL_messageEmpty) {
-                    continue;
+                // канал сообщения (peer_id есть и у service/empty)
+                long dialogId = msg.peer_id != null && msg.peer_id.channel_id != 0 ? -msg.peer_id.channel_id : 0;
+                // курсор канала двигаем ДО любых skip (иначе на удалённых постах
+                // курсор стоит и та же страница тянется бесконечно)
+                if (dialogId != 0) {
+                    Integer prevOldest = oldestFetchedId.get(dialogId);
+                    if (prevOldest == null || msg.id < prevOldest) {
+                        oldestFetchedId.put(dialogId, msg.id);
+                    }
                 }
-                if (now - msg.date > MAX_POST_AGE_SECONDS) {
+                if (msg instanceof TLRPC.TL_messageService || msg instanceof TLRPC.TL_messageEmpty || dialogId == 0) {
                     continue;
                 }
                 MessageObject messageObject = new MessageObject(currentAccount, msg, false, true);
-                long dialogId = messageObject.getDialogId();
                 TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
                 if (chat == null) {
                     continue;
                 }
+                if (now - msg.date > PAGE_MAX_AGE_SECONDS) {
+                    channelExhausted.add(dialogId); // ушли слишком глубоко — стоп по каналу
+                    continue;
+                }
 
-                // в грид группируем только фото/видео-альбомы: у документов и музыки
-                // GroupedMessages.calculate() не даёт осмысленной геометрии
                 final boolean groupableMedia = msg.grouped_id != 0 && (messageObject.isVideo() || messageObject.isPhoto());
                 if (groupableMedia) {
-                    FeedPost existing = byGroup.get(msg.grouped_id);
+                    // альбом мог начаться на прошлой странице — дособираем в тот же пост
+                    FeedPost existing = poolGroups.get(msg.grouped_id);
                     if (existing != null) {
                         existing.album.add(messageObject);
+                        rebuildAlbum(existing);
                         continue;
                     }
                 }
-
                 FeedPost post = new FeedPost();
                 post.dialogId = dialogId;
                 post.chat = chat;
@@ -279,60 +418,119 @@ public class FeedController extends BaseController {
                 if (groupableMedia) {
                     post.album = new ArrayList<>();
                     post.album.add(messageObject);
-                    byGroup.put(msg.grouped_id, post);
+                    poolGroups.put(msg.grouped_id, post);
                 }
-                newPosts.add(post);
+                fresh.add(post);
             }
 
-            for (FeedPost post : newPosts) {
-                if (post.album != null && post.album.size() > 1) {
-                    Collections.sort(post.album, (a, b) -> a.getId() - b.getId());
-                    post.message = post.album.get(0);
-                    MessageObject.GroupedMessages group = new MessageObject.GroupedMessages();
-                    group.groupId = post.message.messageOwner.grouped_id;
-                    group.messages.addAll(post.album);
-                    group.calculate();
-                    post.groupedMessages = group;
-                }
-                // пустые/непоказываемые посты (нет текста И нечего показать из медиа —
-                // например ссылка без картинки, опрос) в ленту не пускаем
+            for (FeedPost post : fresh) {
+                rebuildAlbum(post);
                 if (TextUtils.isEmpty(post.getText()) && !post.hasMedia()) {
-                    post.score = Float.NEGATIVE_INFINITY;
-                    continue;
+                    continue; // нечего показать
                 }
-                // уже просмотренное не показываем повторно (жёстко)
                 if (isPostSeen(post.dialogId, post.getId())) {
-                    post.score = Float.NEGATIVE_INFINITY;
-                    continue;
+                    continue; // просмотренное
+                }
+                long key = feedKey(post.dialogId, post.getId());
+                if (feedKeys.contains(key)) {
+                    continue; // дубликат (в пуле или уже показан)
                 }
                 post.muted = getMessagesController().isDialogMuted(post.dialogId, 0);
                 post.score = calculateScore(post, now);
+                candidatePool.add(post);
+                feedKeys.add(key);
             }
-
-            for (int i = newPosts.size() - 1; i >= 0; i--) {
-                if (newPosts.get(i).score == Float.NEGATIVE_INFINITY) {
-                    newPosts.remove(i);
-                }
-            }
-            Collections.sort(newPosts, (a, b) -> {
-                int cmp = Float.compare(b.score, a.score);
-                if (cmp != 0) {
-                    return cmp;
-                }
-                return Integer.compare(b.message.messageOwner.date, a.message.messageOwner.date);
-            });
-            diversifyOrder(newPosts);
-
-            posts.clear();
-            posts.addAll(newPosts);
-            loadedOnce = true;
-            lastLoadTime = System.currentTimeMillis();
         } catch (Throwable e) {
             FileLog.e(e);
-        } finally {
-            loading = false;
-            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
         }
+    }
+
+    private void rebuildAlbum(FeedPost post) {
+        if (post.album != null && post.album.size() > 1) {
+            Collections.sort(post.album, (a, b) -> a.getId() - b.getId());
+            post.message = post.album.get(0);
+            MessageObject.GroupedMessages group = new MessageObject.GroupedMessages();
+            group.groupId = post.message.messageOwner.grouped_id;
+            group.messages.addAll(post.album);
+            group.calculate();
+            post.groupedMessages = group;
+        }
+    }
+
+    private static long feedKey(long dialogId, int messageId) {
+        return dialogId * 1_000_000_000L + messageId;
+    }
+
+    /** Выбрать из пула порцию: лучшие по score, без повтора канала в окне, с квотой exploration. */
+    private void placeNextBatch() {
+        // убираем из пула просмотренное (мог отметиться после dwell) — bounds рост пула
+        for (int i = candidatePool.size() - 1; i >= 0; i--) {
+            FeedPost c = candidatePool.get(i);
+            if (isPostSeen(c.dialogId, c.getId())) {
+                candidatePool.remove(i);
+                feedKeys.remove(feedKey(c.dialogId, c.getId()));
+            }
+        }
+        candidatePool.sort((a, b) -> Float.compare(b.score, a.score));
+        final int window = 4;               // не повторять канал 4 поста подряд
+        final int explorationEvery = 6;     // каждый 6-й — «на пробу» из незнакомого канала
+        int placed = 0;
+        while (placed < BATCH && !candidatePool.isEmpty()) {
+            FeedPost pick = null;
+            boolean wantExploration = ((posts.size()) % explorationEvery) == explorationEvery - 1;
+            // первый проход: с учётом diversity (и exploration-предпочтения)
+            for (FeedPost cand : candidatePool) {
+                if (isPostSeen(cand.dialogId, cand.getId())) {
+                    continue;
+                }
+                if (recentlyPlacedChannel(cand.dialogId, window)) {
+                    continue;
+                }
+                if (wantExploration && hasChannelHistory(cand.dialogId)) {
+                    continue;
+                }
+                pick = cand;
+                break;
+            }
+            // второй проход: только diversity
+            if (pick == null) {
+                for (FeedPost cand : candidatePool) {
+                    if (isPostSeen(cand.dialogId, cand.getId())) {
+                        continue;
+                    }
+                    if (recentlyPlacedChannel(cand.dialogId, window)) {
+                        continue;
+                    }
+                    pick = cand;
+                    break;
+                }
+            }
+            // третий проход: что осталось (не seen)
+            if (pick == null) {
+                for (FeedPost cand : candidatePool) {
+                    if (!isPostSeen(cand.dialogId, cand.getId())) {
+                        pick = cand;
+                        break;
+                    }
+                }
+            }
+            if (pick == null) {
+                break; // всё оставшееся — seen
+            }
+            candidatePool.remove(pick);
+            posts.add(pick);
+            placed++;
+        }
+    }
+
+    private boolean recentlyPlacedChannel(long dialogId, int window) {
+        int from = Math.max(0, posts.size() - window);
+        for (int i = posts.size() - 1; i >= from; i--) {
+            if (posts.get(i).dialogId == dialogId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private float calculateScore(FeedPost post, int now) {
@@ -396,21 +594,6 @@ public class FeedController extends BaseController {
     private float getContentTypeBias(int type) {
         float avg = (getTypeRating(TYPE_TEXT) + getTypeRating(TYPE_PHOTO) + getTypeRating(TYPE_VIDEO)) / 3f;
         return 0.15f * (getTypeRating(type) - avg);
-    }
-
-    /** Разнообразие: не даём одному каналу идти подряд, если есть чем разбавить. */
-    private static void diversifyOrder(ArrayList<FeedPost> posts) {
-        for (int i = 1; i < posts.size(); i++) {
-            if (posts.get(i).dialogId != posts.get(i - 1).dialogId) {
-                continue;
-            }
-            for (int j = i + 1; j < Math.min(posts.size(), i + 7); j++) {
-                if (posts.get(j).dialogId != posts.get(i - 1).dialogId) {
-                    posts.add(i, posts.remove(j));
-                    break;
-                }
-            }
-        }
     }
 
     /* Рейтинг каналов: копится от взаимодействий, затухает с полураспадом в неделю. */
