@@ -406,8 +406,9 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         for (int i = 0; i < media.size(); i++) {
             MessageObject messageObject = media.get(i);
             if (messageObject.isVideo()) {
-                // видео следующего поста буферим заранее (низкий приоритет), только не на медленной сети
-                if (offset <= 2 && !slow && i == 0) {
+                // видео следующего поста буферим заранее ТОЛЬКО на WiFi и только на 1 вперёд —
+                // чтобы фоновая загрузка не отъедала канал у текущего проигрываемого видео
+                if (offset == 1 && wifi && i == 0) {
                     TLRPC.Document doc = messageObject.getDocument();
                     if (doc != null && !isVideoCached(doc)) {
                         FileLoader.getInstance(currentAccount).loadFile(doc, messageObject, FileLoader.PRIORITY_LOW, 1);

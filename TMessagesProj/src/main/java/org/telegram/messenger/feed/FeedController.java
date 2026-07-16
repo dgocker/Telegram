@@ -401,9 +401,10 @@ public class FeedController extends BaseController {
                     continue;
                 }
 
-                final boolean groupableMedia = msg.grouped_id != 0 && (messageObject.isVideo() || messageObject.isPhoto());
-                if (groupableMedia) {
-                    // альбом мог начаться на прошлой странице — дособираем в тот же пост
+                // группируем ВЕСЬ альбом по grouped_id (в т.ч. spoiler/ограниченные/документы) —
+                // иначе теряются элементы и сообщение с подписью; показываем потом только фото/видео
+                final boolean grouped = msg.grouped_id != 0;
+                if (grouped) {
                     FeedPost existing = poolGroups.get(msg.grouped_id);
                     if (existing != null) {
                         existing.album.add(messageObject);
@@ -415,7 +416,7 @@ public class FeedController extends BaseController {
                 post.dialogId = dialogId;
                 post.chat = chat;
                 post.message = messageObject;
-                if (groupableMedia) {
+                if (grouped) {
                     post.album = new ArrayList<>();
                     post.album.add(messageObject);
                     poolGroups.put(msg.grouped_id, post);
@@ -448,12 +449,19 @@ public class FeedController extends BaseController {
     private void rebuildAlbum(FeedPost post) {
         if (post.album != null && post.album.size() > 1) {
             Collections.sort(post.album, (a, b) -> a.getId() - b.getId());
-            post.message = post.album.get(0);
-            MessageObject.GroupedMessages group = new MessageObject.GroupedMessages();
-            group.groupId = post.message.messageOwner.grouped_id;
-            group.messages.addAll(post.album);
-            group.calculate();
-            post.groupedMessages = group;
+            // главное сообщение и грид-геометрия — из показываемых (фото/видео);
+            // документы/аудио остаются в album только чтобы не потерять их подпись
+            ArrayList<MessageObject> shown = post.renderableMedia();
+            post.message = shown.isEmpty() ? post.album.get(0) : shown.get(0);
+            if (shown.size() > 1) {
+                MessageObject.GroupedMessages group = new MessageObject.GroupedMessages();
+                group.groupId = post.message.messageOwner.grouped_id;
+                group.messages.addAll(shown);
+                group.calculate();
+                post.groupedMessages = group;
+            } else {
+                post.groupedMessages = null;
+            }
         }
     }
 
