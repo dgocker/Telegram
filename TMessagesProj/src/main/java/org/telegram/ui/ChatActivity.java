@@ -8518,16 +8518,16 @@ public class ChatActivity extends BaseFragment implements
                             }
                         }
                     } else {
-                        // нижняя кнопка канала: включение звука — сразу, выключение — с подтверждением
+                        // нижняя кнопка канала: выключение звука — сразу, включение — с подтверждением
                         if (getMessagesController().isDialogMuted(dialog_id, getTopicId())) {
-                            toggleMute(true);
-                        } else {
                             AlertDialog.Builder muteBuilder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
-                            muteBuilder.setTitle("Убрать звук у канала?");
-                            muteBuilder.setMessage("Уведомления этого канала больше не будут приходить.");
-                            muteBuilder.setPositiveButton("Убрать звук", (di, i) -> toggleMute(true));
+                            muteBuilder.setTitle("Включить звук у канала?");
+                            muteBuilder.setMessage("Уведомления этого канала снова будут приходить.");
+                            muteBuilder.setPositiveButton("Включить звук", (di, i) -> toggleMute(true));
                             muteBuilder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
                             showDialog(muteBuilder.create());
+                        } else {
+                            toggleMute(true);
                         }
                     }
                 } else {
