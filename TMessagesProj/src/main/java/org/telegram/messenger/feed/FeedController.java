@@ -116,17 +116,25 @@ public class FeedController extends BaseController {
             return r != null ? r.replies : 0;
         }
 
-        public String getText() {
+        /** Сообщение, из которого взят текст getText() (нужно для entities-ссылок); null — текст из externalCaption. */
+        public MessageObject textMessage() {
             if (!TextUtils.isEmpty(message.messageOwner.message)) {
-                return message.messageOwner.message;
+                return message;
             }
             if (album != null) {
                 for (int i = 0; i < album.size(); i++) {
-                    String caption = album.get(i).messageOwner.message;
-                    if (!TextUtils.isEmpty(caption)) {
-                        return caption;
+                    if (!TextUtils.isEmpty(album.get(i).messageOwner.message)) {
+                        return album.get(i);
                     }
                 }
+            }
+            return null;
+        }
+
+        public String getText() {
+            MessageObject textSource = textMessage();
+            if (textSource != null) {
+                return textSource.messageOwner.message;
             }
             if (!TextUtils.isEmpty(externalCaption)) {
                 return externalCaption;
@@ -147,18 +155,54 @@ public class FeedController extends BaseController {
         }
 
         public int getForwards() {
-            return message.messageOwner.forwards;
+            // у альбома forwards лежат на одном (обычно подписанном) сообщении и относятся
+            // ко всему посту — берём max, суммирование задвоило бы один и тот же репост
+            int forwards = message.messageOwner.forwards;
+            if (album != null) {
+                for (int i = 0; i < album.size(); i++) {
+                    forwards = Math.max(forwards, album.get(i).messageOwner.forwards);
+                }
+            }
+            return forwards;
         }
 
         public int getReactionsCount() {
+            // реакции у альбома могут висеть на разных сообщениях (обычно на подписанном) — суммируем
             int count = 0;
-            TLRPC.Message owner = message.messageOwner;
+            if (album != null) {
+                for (int i = 0; i < album.size(); i++) {
+                    count += reactionsOf(album.get(i).messageOwner);
+                }
+            } else {
+                count = reactionsOf(message.messageOwner);
+            }
+            return count;
+        }
+
+        private static int reactionsOf(TLRPC.Message owner) {
+            int count = 0;
             if (owner.reactions != null && owner.reactions.results != null) {
                 for (int i = 0; i < owner.reactions.results.size(); i++) {
                     count += owner.reactions.results.get(i).count;
                 }
             }
             return count;
+        }
+
+        /** Битовая маска модальностей (1 << MOD_*): у поста их может быть несколько (фото+текст и т.д.). */
+        public int modalityMask() {
+            int mask = 0;
+            if (getText().trim().length() >= MEANINGFUL_TEXT_MIN_CHARS) {
+                mask |= 1 << MOD_TEXT;
+            }
+            ArrayList<MessageObject> media = renderableMedia();
+            for (int i = 0; i < media.size(); i++) {
+                mask |= media.get(i).isVideo() ? (1 << MOD_VIDEO) : (1 << MOD_PHOTO);
+            }
+            if (media.size() > 1) {
+                mask |= 1 << MOD_ALBUM;
+            }
+            return mask;
         }
     }
 
@@ -174,6 +218,14 @@ public class FeedController extends BaseController {
     private final HashMap<Long, Integer> oldestFetchedId = new HashMap<>();
     private final java.util.HashSet<Long> channelExhausted = new java.util.HashSet<>();
     private final java.util.HashSet<Long> feedKeys = new java.util.HashSet<>();      // O(1) дедуп (пул+показанные)
+    // ponytail: getId() альбома дрейфует при in-place склейке хвоста (message = нижний
+    // renderable, хвост приходит с меньшими id), поэтому ключ в feedKeys устаревает —
+    // мелкая утечка множества до перезагрузки ленты, дублей не даёт (poolGroups держит
+    // один FeedPost на grouped_id). Seen-ключи стабильны: гейт albumComplete() не даёт
+    // показать/отметить пост до полной склейки, а после неё id уже не меняется.
+    // Если всё же появятся повторы альбомов — ключевать дедуп/seen по grouped_id
+    // с миграцией seen-ключей "dialogId_messageId" и правкой FeedHistoryActivity
+    // (там навигация в чат идёт по messageId).
     private final HashMap<Long, FeedPost> poolGroups = new HashMap<>();              // grouped_id → пост (склейка альбомов между страницами)
 
     private boolean loading;
@@ -307,10 +359,38 @@ public class FeedController extends BaseController {
         return channelExhausted.size() >= channelIds.size();
     }
 
+    /**
+     * Альбом «полон», когда мы уже подтянули сообщение СТАРШЕ его нижнего элемента
+     * (значит ниже границы фетча members этого альбома нет) либо канал исчерпан.
+     * Иначе альбом упирается в границу страницы getHistory (limit=POSTS_PER_CHANNEL)
+     * и может быть обрезан — не показываем, пока пагинация не догрузит хвост
+     * (склейка идёт in-place через poolGroups). Так лечится потеря части фото,
+     * подписи и комментариев у больших альбомов.
+     * ponytail: полный альбом, случайно вставший ровно на границе (albumMin==boundary),
+     * отложится на 1 цикл фетча лишним — приемлемо, само-лечится следующей догрузкой.
+     */
+    private boolean albumComplete(FeedPost p) {
+        if (p.album == null) {
+            return true; // одиночное медиа — не альбом
+        }
+        if (channelExhausted.contains(p.dialogId)) {
+            return true; // старее уже не будет — берём как есть (анти-залипание)
+        }
+        Integer boundary = oldestFetchedId.get(p.dialogId);
+        if (boundary == null) {
+            return true;
+        }
+        int albumMin = Integer.MAX_VALUE;
+        for (int i = 0; i < p.album.size(); i++) {
+            albumMin = Math.min(albumMin, p.album.get(i).getId());
+        }
+        return albumMin > boundary; // ниже альбома есть ещё сообщения → альбом целиком
+    }
+
     private int countPlaceable() {
         int c = 0;
         for (FeedPost p : candidatePool) {
-            if (!isPostSeen(p.dialogId, p.getId())) {
+            if (!isPostSeen(p.dialogId, p.getId()) && albumComplete(p)) {
                 c++;
             }
         }
@@ -557,6 +637,9 @@ public class FeedController extends BaseController {
                 if (recentlyPlacedChannel(cand.dialogId, window)) {
                     continue;
                 }
+                if (!albumComplete(cand)) {
+                    continue; // альбом ещё не догружен целиком — не показываем обрезанным
+                }
                 if (wantExploration && hasChannelHistory(cand.dialogId)) {
                     continue;
                 }
@@ -572,6 +655,9 @@ public class FeedController extends BaseController {
                     if (recentlyPlacedChannel(cand.dialogId, window)) {
                         continue;
                     }
+                    if (!albumComplete(cand)) {
+                        continue; // альбом ещё не догружен целиком
+                    }
                     pick = cand;
                     break;
                 }
@@ -579,7 +665,7 @@ public class FeedController extends BaseController {
             // третий проход: что осталось (не seen)
             if (pick == null) {
                 for (FeedPost cand : candidatePool) {
-                    if (!isPostSeen(cand.dialogId, cand.getId())) {
+                    if (!isPostSeen(cand.dialogId, cand.getId()) && albumComplete(cand)) {
                         pick = cand;
                         break;
                     }
@@ -621,56 +707,130 @@ public class FeedController extends BaseController {
         if (!hasChannelHistory(post.dialogId)) {
             score += 1.5f;
         }
-        // предпочтение по типу контента (видео/фото/текст)
-        score += getContentTypeBias(contentTypeOf(post));
+        // предпочтения по модальностям (текст/фото/видео/альбом, у поста их может быть несколько)
+        score += getModalityBias(post.modalityMask());
         return score;
     }
 
-    /* Предпочтение по типу контента: копим отклик отдельно на видео / фото / текст */
+    /*
+     * Модальности контента. Пост описывается не одним типом, а набором независимых
+     * измерений: осмысленный текст, фото, видео, альбом (несколько медиа). Сигнал
+     * пользователя (dwell/скип/дизлайк) начисляется КАЖДОЙ модальности поста, а в
+     * скоре берётся среднее по его модальностям — так фото+текст обучает и фото-,
+     * и текст-предпочтение, без задвоения при смешанных постах.
+     */
+
+    public static final int MOD_TEXT = 0;
+    public static final int MOD_PHOTO = 1;
+    public static final int MOD_VIDEO = 2;
+    public static final int MOD_ALBUM = 3;   // мультимедиа-пост: отдельное измерение «любит подборки»
+    private static final int MOD_COUNT = 4;
+
+    // Тюнинг модальностей
+    private static final int MEANINGFUL_TEXT_MIN_CHARS = 16;          // короче — эмодзи/тех.подпись, текстом не считаем
+    private static final float MODALITY_BIAS_WEIGHT = 0.15f;          // вклад модальных предпочтений в итоговый скор
+    private static final float MODALITY_SKIP_DELTA = -0.15f;          // мгновенный свайп: минус каждой модальности поста
+    private static final float MODALITY_DWELL_FACTOR = 0.5f;          // доля dwell-буста канала, идущая модальностям
+    private static final float MODALITY_VIDEO_COMPLETE_DELTA = 0.4f;  // досмотр до конца — сигнал именно про видео
+    private static final float MODALITY_DISLIKE_DELTA = -1.5f;        // дизлайк: минус каждой модальности поста
+    private static final float MODALITY_RATING_MAX = 30f;
+    private static final float MODALITY_RATING_MIN = -20f;
+
+    /* Тип «одним словом» — только для подписи в истории просмотров (FeedHistoryActivity). */
 
     public static final int TYPE_TEXT = 0;
     public static final int TYPE_PHOTO = 1;
     public static final int TYPE_VIDEO = 2;
 
     public static int contentTypeOf(FeedPost post) {
-        if (post.message.isVideo()) {
+        int mask = post.modalityMask();
+        if ((mask & (1 << MOD_VIDEO)) != 0) {
             return TYPE_VIDEO;
         }
-        if (post.message.photoThumbs != null && !post.message.photoThumbs.isEmpty()) {
+        if ((mask & (1 << MOD_PHOTO)) != 0) {
             return TYPE_PHOTO;
         }
         return TYPE_TEXT;
     }
 
-    private float getTypeRating(int type) {
+    private float getModalityRating(int mod) {
         SharedPreferences prefs = getRatingPrefs();
-        float rating = prefs.getFloat("type_" + type, 0);
+        float rating = prefs.getFloat("m_" + mod, 0);
         if (rating == 0) {
             return 0;
         }
-        long updated = prefs.getLong("typet_" + type, 0);
+        long updated = prefs.getLong("mt_" + mod, 0);
         double days = Math.max(0, System.currentTimeMillis() - updated) / 86400000.0;
         return rating * (float) Math.pow(0.5, days / RATING_HALF_LIFE_DAYS);
     }
 
-    private void addTypeRating(int type, float delta) {
-        float rating = Math.max(-20f, Math.min(30f, getTypeRating(type) + delta));
+    private void addModalityRating(int mod, float delta) {
+        float rating = Math.max(MODALITY_RATING_MIN, Math.min(MODALITY_RATING_MAX, getModalityRating(mod) + delta));
         getRatingPrefs().edit()
-            .putFloat("type_" + type, rating)
-            .putLong("typet_" + type, System.currentTimeMillis())
+            .putFloat("m_" + mod, rating)
+            .putLong("mt_" + mod, System.currentTimeMillis())
             .apply();
     }
 
-    /** Смещение скора: любимый тип выше, нелюбимый ниже, относительно среднего по типам. */
-    private float getContentTypeBias(int type) {
-        float avg = (getTypeRating(TYPE_TEXT) + getTypeRating(TYPE_PHOTO) + getTypeRating(TYPE_VIDEO)) / 3f;
-        return 0.15f * (getTypeRating(type) - avg);
+    /** Полная дельта каждой модальности поста: пост экспонировал каждую целиком,
+     *  а в скоре берётся среднее по модальностям — задвоения смешанных постов нет. */
+    private void addModalityRatingAll(int mask, float delta) {
+        for (int m = 0; m < MOD_COUNT; m++) {
+            if ((mask & (1 << m)) != 0) {
+                addModalityRating(m, delta);
+            }
+        }
+    }
+
+    /** Смещение скора: средний рейтинг модальностей поста относительно среднего по всем. */
+    private float getModalityBias(int mask) {
+        if (mask == 0) {
+            return 0;
+        }
+        float avgAll = 0;
+        for (int m = 0; m < MOD_COUNT; m++) {
+            avgAll += getModalityRating(m);
+        }
+        avgAll /= MOD_COUNT;
+        float sum = 0;
+        int n = 0;
+        for (int m = 0; m < MOD_COUNT; m++) {
+            if ((mask & (1 << m)) != 0) {
+                sum += getModalityRating(m);
+                n++;
+            }
+        }
+        return MODALITY_BIAS_WEIGHT * (sum / n - avgAll);
     }
 
     /* Рейтинг каналов: копится от взаимодействий, затухает с полураспадом в неделю. */
 
+    private boolean modalityMigrationChecked;
+
     private SharedPreferences getRatingPrefs() {
-        return ApplicationLoader.applicationContext.getSharedPreferences("feed_rank" + currentAccount, 0);
+        SharedPreferences prefs = ApplicationLoader.applicationContext.getSharedPreferences("feed_rank" + currentAccount, 0);
+        if (!modalityMigrationChecked) {
+            modalityMigrationChecked = true;
+            migrateTypeRatingsToModalities(prefs);
+        }
+        return prefs;
+    }
+
+    /** Разовый перенос старых односложных type_*-рейтингов в модальности (индексы совпадают).
+     *  Старые ключи не трогаем (безвредны, оставляют путь отката); каналы ("r_"/"t_") без изменений. */
+    private void migrateTypeRatingsToModalities(SharedPreferences prefs) {
+        if (prefs.getBoolean("mod_migrated", false)) {
+            return;
+        }
+        SharedPreferences.Editor editor = prefs.edit();
+        for (int t = TYPE_TEXT; t <= TYPE_VIDEO; t++) {
+            float rating = prefs.getFloat("type_" + t, 0);
+            if (rating != 0) {
+                editor.putFloat("m_" + t, rating);
+                editor.putLong("mt_" + t, prefs.getLong("typet_" + t, System.currentTimeMillis()));
+            }
+        }
+        editor.putBoolean("mod_migrated", true).apply();
     }
 
     public float getChannelRating(long dialogId) {
@@ -738,44 +898,38 @@ public class FeedController extends BaseController {
 
     /* TikTok-сигналы уровня поста: сколько секунд смотрели, был ли быстрый свайп-скип */
 
-    public void trackPostDwell(long dialogId, int messageId, long millis, boolean videoCompleted) {
-        trackPostDwell(dialogId, messageId, millis, videoCompleted, TYPE_TEXT, null);
-    }
-
-    public void trackPostDwell(long dialogId, int messageId, long millis, boolean videoCompleted, int contentType, String title) {
-        if (!isTrackedChannel(dialogId)) {
+    public void trackPostDwell(FeedPost post, long millis, boolean videoCompleted) {
+        if (!isTrackedChannel(post.dialogId)) {
             return;
         }
-        markPostSeen(dialogId, messageId, contentType, title);
+        markPostSeen(post.dialogId, post.getId(), contentTypeOf(post), post.chat != null ? post.chat.title : null);
+        final int mask = post.modalityMask();
         if (millis < 1200) {
-            addRating(dialogId, -0.2f);       // мгновенный свайп = «не интересно»
-            addTypeRating(contentType, -0.15f);
+            addRating(post.dialogId, -0.2f);       // мгновенный свайп = «не интересно»
+            addModalityRatingAll(mask, MODALITY_SKIP_DELTA);
         } else if (millis > 4000) {
             float boost = Math.min(1.2f, (millis - 4000) / 1000f * 0.08f);
-            addRating(dialogId, boost);
-            addTypeRating(contentType, boost * 0.5f);
+            addRating(post.dialogId, boost);
+            addModalityRatingAll(mask, boost * MODALITY_DWELL_FACTOR);
         }
         if (videoCompleted) {
-            addRating(dialogId, 0.6f);
-            addTypeRating(contentType, 0.4f);
+            addRating(post.dialogId, 0.6f);
+            // досмотр — сигнал именно про видео, а не про подпись/фото рядом
+            addModalityRating(MOD_VIDEO, MODALITY_VIDEO_COMPLETE_DELTA);
         }
     }
 
     /* Дизлайк: сильный минус каналу (замена скрытию каналов) */
 
-    public void trackDislike(long dialogId, int messageId) {
-        trackDislike(dialogId, messageId, TYPE_TEXT);
-    }
-
-    public void trackDislike(long dialogId, int messageId, int contentType) {
-        if (!isTrackedChannel(dialogId)) {
+    public void trackDislike(FeedPost post) {
+        if (!isTrackedChannel(post.dialogId)) {
             return;
         }
-        markPostSeen(dialogId, messageId, contentType, null);
-        addRating(dialogId, -6f);
-        addTypeRating(contentType, -1.5f);
-        int count = getRatingPrefs().getInt("disc_" + dialogId, 0) + 1;
-        getRatingPrefs().edit().putInt("disc_" + dialogId, count).apply();
+        markPostSeen(post.dialogId, post.getId(), contentTypeOf(post), null);
+        addRating(post.dialogId, -6f);
+        addModalityRatingAll(post.modalityMask(), MODALITY_DISLIKE_DELTA);
+        int count = getRatingPrefs().getInt("disc_" + post.dialogId, 0) + 1;
+        getRatingPrefs().edit().putInt("disc_" + post.dialogId, count).apply();
     }
 
     public int getDislikeCount(long dialogId) {
@@ -809,10 +963,6 @@ public class FeedController extends BaseController {
             }
         }
         return seenPosts;
-    }
-
-    public void markPostSeen(long dialogId, int messageId) {
-        markPostSeen(dialogId, messageId, TYPE_TEXT, null);
     }
 
     public void markPostSeen(long dialogId, int messageId, int contentType, String title) {

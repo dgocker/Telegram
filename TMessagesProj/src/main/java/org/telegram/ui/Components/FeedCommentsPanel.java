@@ -346,10 +346,8 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
     }
 
     private void updateTitle() {
-        int count = 0;
-        if (post != null && post.message.messageOwner.replies != null) {
-            count = post.message.messageOwner.replies.replies;
-        }
+        // у альбома replies лежат не на первом сообщении — commentsCount() ищет нужное
+        int count = post != null ? post.commentsCount() : 0;
         if (loader != null) {
             count = Math.max(count, loader.getComments().size());
         }

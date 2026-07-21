@@ -328,11 +328,8 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private void trackCurrentDwell() {
         ArrayList<FeedController.FeedPost> posts = getPosts();
         if (currentPage >= 0 && currentPage < posts.size() && pageShownTime > 0) {
-            FeedController.FeedPost post = posts.get(currentPage);
-            int type = FeedController.contentTypeOf(post);
-            String title = post.chat != null ? post.chat.title : null;
             FeedController.getInstance(currentAccount).trackPostDwell(
-                post.dialogId, post.getId(), SystemClock.elapsedRealtime() - pageShownTime, false, type, title);
+                posts.get(currentPage), SystemClock.elapsedRealtime() - pageShownTime, false);
         }
     }
 
@@ -472,14 +469,10 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     }
 
     private TLRPC.Document currentVideoDoc() {
-        ArrayList<FeedController.FeedPost> posts = getPosts();
-        if (currentPage >= 0 && currentPage < posts.size()) {
-            MessageObject m = posts.get(currentPage).message;
-            if (m != null && m.isVideo()) {
-                return m.getDocument();
-            }
-        }
-        return null;
+        // документ берём у активной страницы: у альбома играющее видео может быть
+        // не post.message, и отмена префетча била бы не по тому документу
+        FeedPageView page = findPageView(currentPage);
+        return page != null ? page.getPlayingVideoDocument() : null;
     }
 
     /* Выжимки */
@@ -537,7 +530,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
 
     @Override
     public void onDislike(FeedController.FeedPost post) {
-        FeedController.getInstance(currentAccount).trackDislike(post.dialogId, post.getId(), FeedController.contentTypeOf(post));
+        FeedController.getInstance(currentAccount).trackDislike(post);
         if (getParentActivity() != null) {
             BulletinFactory.of(this).createSimpleBulletin(R.raw.chats_infotip,
                 getString(R.string.SmartFeedDisliked)).setDuration(Bulletin.DURATION_SHORT).show();

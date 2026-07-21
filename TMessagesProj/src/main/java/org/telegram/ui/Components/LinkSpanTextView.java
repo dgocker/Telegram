@@ -40,7 +40,13 @@ public class LinkSpanTextView extends TextView {
         super.setText(text, BufferType.SPANNABLE);
         CharSequence current = getText();
         if (current instanceof Spannable) {
-            Linkify.addLinks((Spannable) current, Linkify.WEB_URLS);
+            Spannable spannable = (Spannable) current;
+            // Linkify.addLinks стирает существующие URLSpan — если ссылки уже расставлены
+            // (entities Telegram, включая скрытые text_url), не затираем их; серверные
+            // entities покрывают и голые URL, так что Linkify тогда не нужен
+            if (spannable.getSpans(0, spannable.length(), URLSpan.class).length == 0) {
+                Linkify.addLinks(spannable, Linkify.WEB_URLS);
+            }
         }
     }
 

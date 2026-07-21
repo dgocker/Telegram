@@ -583,7 +583,16 @@ public class FeedPageView extends FrameLayout {
         }
         infoTextView.setText(info);
 
-        fullTextView.setText(post.getText());
+        // entity-ссылки Telegram (text_url и т.п.) кликабельны, как в модалке поста;
+        // голые URL без entities долинкует LinkSpanTextView
+        CharSequence fullText = post.getText();
+        MessageObject textSource = post.textMessage();
+        if (textSource != null && textSource.messageOwner.entities != null && !textSource.messageOwner.entities.isEmpty()) {
+            android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(fullText);
+            MessageObject.addEntitiesToText(sb, textSource.messageOwner.entities, false, false, false, true);
+            fullText = sb;
+        }
+        fullTextView.setText(fullText);
 
         if (mediaMessages.isEmpty()) {
             // текстовый пост: градиент вместо медиа
@@ -602,6 +611,11 @@ public class FeedPageView extends FrameLayout {
 
     public FeedController.FeedPost getPost() {
         return post;
+    }
+
+    /** Документ видео, которое сейчас реально стримит плеер (активный элемент карусели). */
+    public TLRPC.Document getPlayingVideoDocument() {
+        return videoPlayerMessage != null ? videoPlayerMessage.getDocument() : null;
     }
 
     public void setSummary(String summary, boolean modelAvailable) {
@@ -748,6 +762,7 @@ public class FeedPageView extends FrameLayout {
         private final BackupImageView imageView; // постер (кадр-превью)
         private android.view.TextureView textureView;
         private Drawable playDrawable;
+        private RadialProgressView loadingView; // спиннер, пока видео не отдало первый кадр
         private boolean showPlay;
         private boolean isVideo;
         private float videoAspect;
@@ -793,9 +808,26 @@ public class FeedPageView extends FrameLayout {
             textureView.setVisibility(VISIBLE);
             textureView.setAlpha(0f); // покажем по первому кадру, чтобы не мигало чёрным
             showPlay = false;
+            setLoading(true); // буферизация: крутилка поверх постера, чтобы видео не путали с фото
             requestLayout();
             invalidate();
             return textureView;
+        }
+
+        /** Крутилка-предзагрузка поверх постера, пока плеер не отрисовал первый кадр. */
+        void setLoading(boolean value) {
+            if (value) {
+                if (loadingView == null) {
+                    loadingView = new RadialProgressView(getContext());
+                    loadingView.setSize(dp(48));
+                    loadingView.setStrokeWidth(2.5f);
+                    loadingView.setProgressColor(Color.WHITE);
+                    addView(loadingView, LayoutHelper.createFrame(56, 56, Gravity.CENTER));
+                }
+                loadingView.setVisibility(VISIBLE);
+            } else if (loadingView != null) {
+                loadingView.setVisibility(GONE);
+            }
         }
 
         /** Вписываем видео по его соотношению сторон (letterbox), как фото-постер. */
@@ -832,6 +864,7 @@ public class FeedPageView extends FrameLayout {
                 textureView.setVisibility(VISIBLE);
                 textureView.animate().alpha(1f).setDuration(150).start();
             }
+            setLoading(false); // первый кадр пришёл — крутилку прячем
             showPlay = false;
             invalidate();
         }
@@ -841,6 +874,7 @@ public class FeedPageView extends FrameLayout {
                 textureView.setAlpha(0f);
                 textureView.setVisibility(GONE);
             }
+            setLoading(false);
             showPlay = isVideo;
             invalidate();
         }
@@ -857,6 +891,7 @@ public class FeedPageView extends FrameLayout {
             }
             isVideo = messageObject.isVideo();
             showPlay = isVideo; // постер видео показывает play, пока плеер не отрисует кадр
+            setLoading(false); // переиспользуемый холдер мог остаться с крутилкой от прошлого видео
             if (isVideo && playDrawable == null) {
                 playDrawable = ContextCompat.getDrawable(getContext(), R.drawable.play_mini_video).mutate();
             }

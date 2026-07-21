@@ -88,11 +88,9 @@ public class FeedPostSheet extends BottomSheetWithRecyclerListView {
         this.fragment = fragment;
         this.post = post;
 
-        if (post.album != null) {
-            mediaMessages.addAll(post.album);
-        } else if (post.message.photoThumbs != null && !post.message.photoThumbs.isEmpty()) {
-            mediaMessages.add(post.message);
-        }
+        // только показываемые медиа: геометрия post.groupedMessages построена из renderableMedia(),
+        // элементы полного album без позиции (документы и т.п.) рисовались бы поверх первого слота
+        mediaMessages.addAll(post.renderableMedia());
 
         Context context = getContext();
 

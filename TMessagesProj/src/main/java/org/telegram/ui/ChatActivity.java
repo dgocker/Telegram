@@ -8518,7 +8518,17 @@ public class ChatActivity extends BaseFragment implements
                             }
                         }
                     } else {
-                        toggleMute(true);
+                        // нижняя кнопка канала: включение звука — сразу, выключение — с подтверждением
+                        if (getMessagesController().isDialogMuted(dialog_id, getTopicId())) {
+                            toggleMute(true);
+                        } else {
+                            AlertDialog.Builder muteBuilder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
+                            muteBuilder.setTitle("Убрать звук у канала?");
+                            muteBuilder.setMessage("Уведомления этого канала больше не будут приходить.");
+                            muteBuilder.setPositiveButton("Убрать звук", (di, i) -> toggleMute(true));
+                            muteBuilder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+                            showDialog(muteBuilder.create());
+                        }
                     }
                 } else {
                     boolean canDeleteHistory = chatInfo != null && chatInfo.can_delete_channel;
