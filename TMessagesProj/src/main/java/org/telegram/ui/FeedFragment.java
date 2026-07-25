@@ -246,10 +246,9 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     public void onResume() {
         super.onResume();
         // при возврате в приложение ленту НЕ перезагружаем (иначе теряются порядок,
-        // позиция и тексты) — грузим только если её ещё нет
-        if (getPosts().isEmpty()) {
-            FeedController.getInstance(currentAccount).loadFeed(false);
-        }
+        // позиция и тексты) — loadFeed(false) грузит только пустую ленту либо
+        // подтягивает свежие посты в хвост, если давно не обновлялись
+        FeedController.getInstance(currentAccount).loadFeed(false);
         updateEmptyView();
         pageShownTime = SystemClock.elapsedRealtime();
         setPageActive(currentPage, true);
@@ -283,9 +282,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
                 });
             }
         } else if (id == NotificationCenter.dialogsNeedReload) {
-            if (getPosts().isEmpty()) {
-                FeedController.getInstance(currentAccount).loadFeed(false);
-            }
+            FeedController.getInstance(currentAccount).loadFeed(false);
         }
     }
 

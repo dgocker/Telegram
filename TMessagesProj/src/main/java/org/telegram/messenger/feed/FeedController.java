@@ -211,6 +211,7 @@ public class FeedController extends BaseController {
     private static final int BATCH = 12;             // сколько постов выдаём за раз
     private static final int POOL_LOW = 25;          // ниже — догружаем старые посты каналов
     private static final int PAGE_MAX_AGE_SECONDS = 45 * 24 * 60 * 60; // не глубже ~45 дней
+    private static final long TOPUP_INTERVAL = 5 * 60 * 1000L; // как часто подтягиваем свежие посты
 
     private final ArrayList<FeedPost> posts = new ArrayList<>();
     private final ArrayList<FeedPost> candidatePool = new ArrayList<>();
@@ -271,6 +272,9 @@ public class FeedController extends BaseController {
         for (TLRPC.Dialog d : channelDialogs) {
             channelIds.add(d.id);
         }
+        // курсоры/флаги отвалившихся каналов иначе перевешивают allChannelsExhausted()
+        channelExhausted.retainAll(channelIds);
+        oldestFetchedId.keySet().retainAll(channelIds);
     }
 
     /** Первичная загрузка (или обновление пустой ленты). */
@@ -278,8 +282,12 @@ public class FeedController extends BaseController {
         if (loading) {
             return;
         }
-        // показанную ленту не пересобираем при возврате — иначе теряются порядок и позиция
+        // показанную ленту не пересобираем при возврате — иначе теряются порядок и позиция;
+        // но свежие посты в пул подтянуть надо, иначе в живом процессе лента их не увидит
         if (!force && loadedOnce && !posts.isEmpty()) {
+            if (isTopUpDue()) {
+                topUpFresh();
+            }
             return;
         }
         refreshChannelList();
@@ -315,9 +323,51 @@ public class FeedController extends BaseController {
         });
     }
 
+    private boolean isTopUpDue() {
+        return loadedOnce && System.currentTimeMillis() - lastRefreshTime >= TOPUP_INTERVAL;
+    }
+
+    /**
+     * Подтянуть свежие посты каналов в пул, НЕ пересобирая показанную ленту.
+     * fetchPages(true) идёт с offset_id=0, дедуп по feedKeys отсекает уже известное,
+     * курсор пагинации не сдвигается (oldestFetchedId держит минимум по каналу).
+     * Без этого новые посты не попадали в ленту, пока жив процесс: скролл тянет только старое.
+     */
+    private void topUpFresh() {
+        refreshChannelList(); // канал мог добавиться/отвалиться
+        if (channelIds.isEmpty()) {
+            return;
+        }
+        fetchPages(true, () -> {
+            boolean placed = false;
+            try {
+                lastRefreshTime = System.currentTimeMillis();
+                if (countPlaceable() > 0) {
+                    exhaustedAll = false; // «лента кончилась» снимаем — есть что показать
+                    placeNextBatch();     // append в хвост, позиция и порядок не сбиваются
+                    placed = true;
+                }
+            } finally {
+                loading = false;
+            }
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            if (!placed) {
+                loadMore(); // свежего нет — обычная догрузка старого, гейт по времени уже закрыт
+            }
+        });
+    }
+
     /** Догрузка при приближении к концу ленты. */
     public void loadMore() {
-        if (loading || exhaustedAll) {
+        if (loading) {
+            return;
+        }
+        // давно не обновлялись — сперва свежее, иначе лента в живом процессе копает только вглубь
+        if (isTopUpDue()) {
+            topUpFresh();
+            return;
+        }
+        if (exhaustedAll) {
             return;
         }
         if (countPlaceable() >= BATCH) {
