@@ -217,6 +217,7 @@ public class FeedController extends BaseController {
     private final ArrayList<FeedPost> candidatePool = new ArrayList<>();
     private final ArrayList<Long> channelIds = new ArrayList<>();
     private final HashMap<Long, Integer> oldestFetchedId = new HashMap<>();
+    private final HashMap<Long, Integer> freshPageOldestId = new HashMap<>();        // нижний id последней СВЕЖЕЙ страницы (top-up)
     private final java.util.HashSet<Long> channelExhausted = new java.util.HashSet<>();
     private final java.util.HashSet<Long> feedKeys = new java.util.HashSet<>();      // O(1) дедуп (пул+показанные)
     // ponytail: getId() альбома дрейфует при in-place склейке хвоста (message = нижний
@@ -275,6 +276,7 @@ public class FeedController extends BaseController {
         // курсоры/флаги отвалившихся каналов иначе перевешивают allChannelsExhausted()
         channelExhausted.retainAll(channelIds);
         oldestFetchedId.keySet().retainAll(channelIds);
+        freshPageOldestId.keySet().retainAll(channelIds);
     }
 
     /** Первичная загрузка (или обновление пустой ленты). */
@@ -303,6 +305,7 @@ public class FeedController extends BaseController {
         feedKeys.clear();
         poolGroups.clear();
         oldestFetchedId.clear();
+        freshPageOldestId.clear();
         channelExhausted.clear();
         exhaustedAll = false;
         // грузим самые свежие посты каждого канала
@@ -434,6 +437,12 @@ public class FeedController extends BaseController {
         for (int i = 0; i < p.album.size(); i++) {
             albumMin = Math.min(albumMin, p.album.get(i).getId());
         }
+        // альбом из свежей страницы top-up: глубокий курсор ничего не доказывает, если
+        // между ним и этой страницей дыра — гарантию даёт только её собственная граница
+        Integer fresh = freshPageOldestId.get(p.dialogId);
+        if (fresh != null && albumMin >= fresh) {
+            boundary = fresh;
+        }
         return albumMin > boundary; // ниже альбома есть ещё сообщения → альбом целиком
     }
 
@@ -486,6 +495,16 @@ public class FeedController extends BaseController {
                             if (res.messages.isEmpty()) {
                                 channelExhausted.add(dialogId);
                             } else {
+                                if (initial) {
+                                    // нижняя граница СВЕЖЕЙ страницы: после top-up между ней и
+                                    // глубоким курсором может быть дыра (>15 новых постов),
+                                    // и общий oldestFetchedId перестаёт доказывать целостность альбома
+                                    int min = Integer.MAX_VALUE;
+                                    for (int m = 0; m < res.messages.size(); m++) {
+                                        min = Math.min(min, res.messages.get(m).id);
+                                    }
+                                    freshPageOldestId.put(dialogId, min);
+                                }
                                 collected.addAll(res.messages);
                             }
                         } else {
@@ -542,8 +561,11 @@ public class FeedController extends BaseController {
                 if (grouped) {
                     FeedPost existing = poolGroups.get(msg.grouped_id);
                     if (existing != null) {
-                        existing.album.add(messageObject);
-                        rebuildAlbum(existing);
+                        // top-up перечитывает свежую страницу — тот же элемент прилетает повторно
+                        if (!albumHas(existing, msg.id)) {
+                            existing.album.add(messageObject);
+                            rebuildAlbum(existing);
+                        }
                         continue;
                     }
                 }
@@ -587,6 +609,15 @@ public class FeedController extends BaseController {
         } catch (Throwable e) {
             FileLog.e(e);
         }
+    }
+
+    private static boolean albumHas(FeedPost post, int messageId) {
+        for (int i = 0; i < post.album.size(); i++) {
+            if (post.album.get(i).getId() == messageId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void rebuildAlbum(FeedPost post) {
