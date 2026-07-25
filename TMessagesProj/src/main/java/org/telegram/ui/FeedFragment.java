@@ -643,10 +643,21 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             return;
         }
         commentMediaView = imageView;
+        // видео ленты глушим: иначе играют два звука разом, а его TextureView под
+        // просмотрщиком теряет поверхность — после возврата остаётся звук и мёртвая картинка
+        setFeedVideoPaused(true);
         ArrayList<MessageObject> single = new ArrayList<>();
         single.add(message);
         PhotoViewer.getInstance().setParentActivity(this);
         PhotoViewer.getInstance().openPhoto(single, 0, message.getDialogId(), 0, 0, commentPhotoProvider);
+    }
+
+    /** setActive без resetShrink: шторка комментов остаётся открытой, сжатие медиа трогать нельзя. */
+    private void setFeedVideoPaused(boolean paused) {
+        FeedPageView page = findPageView(currentPage);
+        if (page != null) {
+            page.setActive(!paused);
+        }
     }
 
     private final PhotoViewer.EmptyPhotoViewerProvider commentPhotoProvider = new PhotoViewer.EmptyPhotoViewerProvider() {
@@ -665,6 +676,16 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             object.thumb = object.imageReceiver.getBitmapSafe();
             object.radius = object.imageReceiver.getRoundRadius(true);
             return object;
+        }
+
+        @Override
+        public void willHidePhotoViewer() {
+            setFeedVideoPaused(false); // видео поста поднимется заново (с начала — плеер пересоздаётся)
+        }
+
+        @Override
+        public void onClose() {
+            commentMediaView = null;
         }
     };
 
