@@ -92,6 +92,10 @@ public class FeedPageView extends FrameLayout {
     private MediaItemView videoItem;
     private MessageObject videoPlayerMessage;
     private boolean manuallyPaused;
+    // позиция освобождённого плеера: страница глохнет на время просмотрщика/сворачивания,
+    // и без этого видео возвращалось бы с нуля
+    private int resumeMessageId;
+    private long resumePosition;
 
     private int bottomInset;
     private int topInset;
@@ -490,6 +494,12 @@ public class FeedPageView extends FrameLayout {
             videoPlayer.setTextureView(item.ensureTextureView());
             videoPlayer.preparePlayer(uri, "other", FileLoader.PRIORITY_HIGH, 0);
             videoPlayer.setMute(false);
+            // вернулись из просмотрщика/сворачивания к тому же видео — продолжаем с того же места
+            if (resumeMessageId != 0 && resumeMessageId == messageObject.getId() && resumePosition > 0) {
+                videoPlayer.seekTo(resumePosition, true);
+            }
+            resumeMessageId = 0;
+            resumePosition = 0;
             videoPlayer.play();
         } catch (Throwable e) {
             org.telegram.messenger.FileLog.e(e);
@@ -500,6 +510,18 @@ public class FeedPageView extends FrameLayout {
 
     private void releaseVideo() {
         if (videoPlayer != null) {
+            try {
+                long position = videoPlayer.getCurrentPosition();
+                long duration = videoPlayer.getDuration();
+                // у самого конца продолжать нечего — пусть следующий показ идёт с начала
+                if (videoPlayerMessage != null && position > 0 && (duration <= 0 || position < duration - 500)) {
+                    resumeMessageId = videoPlayerMessage.getId();
+                    resumePosition = position;
+                } else {
+                    resumeMessageId = 0;
+                    resumePosition = 0;
+                }
+            } catch (Throwable ignore) {}
             try {
                 videoPlayer.releasePlayer(true);
             } catch (Throwable ignore) {}
