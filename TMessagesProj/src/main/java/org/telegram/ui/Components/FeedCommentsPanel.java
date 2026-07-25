@@ -17,12 +17,15 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.FileLoader;
+import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
@@ -44,10 +47,17 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         void onShrinkProgress(float progress, int panelHeight);
         void onDismissed();
         void onCommentsOpened(FeedController.FeedPost post);
+        /** Тап по медиа комментария — открыть просмотрщик (нужен BaseFragment, его держит FeedFragment). */
+        void onCommentMediaClick(MessageObject message, BackupImageView imageView);
     }
+
+    private static final int MEDIA_MAX_WIDTH = 180; // dp: ширина превью фото/видео в комментарии
 
     private final int currentAccount;
     private final Delegate delegate;
+
+    // MessageObject нужен для thumbs и просмотрщика; строим один раз на комментарий с медиа
+    private final java.util.HashMap<Integer, MessageObject> mediaObjects = new java.util.HashMap<>();
 
     private FeedCommentsLoader loader;
     private FeedController.FeedPost post;
@@ -274,12 +284,31 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         }
     }
 
+    /** Фото/видео/гиф комментария — иначе null (файл, голос, стикер остаются подписью). */
+    private MessageObject mediaOf(TLRPC.Message message) {
+        if (message == null
+            || !(message.media instanceof TLRPC.TL_messageMediaPhoto || message.media instanceof TLRPC.TL_messageMediaDocument)) {
+            return null;
+        }
+        MessageObject cached = mediaObjects.get(message.id);
+        if (cached != null) {
+            return cached;
+        }
+        MessageObject object = new MessageObject(currentAccount, message, false, true);
+        if (!(message.media instanceof TLRPC.TL_messageMediaPhoto) && !object.isVideo() && !object.isGif()) {
+            return null;
+        }
+        mediaObjects.put(message.id, object);
+        return object;
+    }
+
     public void show(FeedController.FeedPost newPost) {
         if (shown) {
             return;
         }
         shown = true;
         post = newPost;
+        mediaObjects.clear(); // комментарии другого поста
         loader = new FeedCommentsLoader(currentAccount, post, this);
         loader.start();
         updateTitle();
@@ -444,6 +473,10 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
         private final TextView nameTextView;
         private final TextView timeTextView;
         private final TextView textView;
+        private final FrameLayout mediaContainer;
+        private final BackupImageView mediaImageView;
+        private final TextView mediaBadge;
+        private MessageObject boundMedia;
 
         public CommentCell(Context context) {
             super(context);
@@ -453,25 +486,79 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
             avatarImageView.setRoundRadius(dp(16));
             addView(avatarImageView, LayoutHelper.createFrame(32, 32, Gravity.LEFT | Gravity.TOP));
 
-            nameTextView = new TextView(context);
-            nameTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-            nameTextView.setTypeface(AndroidUtilities.bold());
-            nameTextView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
-            nameTextView.setSingleLine(true);
-            nameTextView.setEllipsize(TextUtils.TruncateAt.END);
-            addView(nameTextView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 42, 0, 60, 0));
-
             timeTextView = new TextView(context);
             timeTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
             timeTextView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
             timeTextView.setSingleLine(true);
             addView(timeTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.RIGHT | Gravity.TOP, 0, 1, 0, 0));
 
+            // колонка справа от аватара: имя, текст, медиа — высота ячейки растёт под медиа
+            LinearLayout column = new LinearLayout(context);
+            column.setOrientation(LinearLayout.VERTICAL);
+            addView(column, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 42, 0, 0, 0));
+
+            nameTextView = new TextView(context);
+            nameTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+            nameTextView.setTypeface(AndroidUtilities.bold());
+            nameTextView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+            nameTextView.setSingleLine(true);
+            nameTextView.setEllipsize(TextUtils.TruncateAt.END);
+            column.addView(nameTextView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 0, 60, 0));
+
             textView = new TextView(context);
             textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
             textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
             textView.setLineSpacing(dp(1), 1f);
-            addView(textView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 42, 19, 0, 0));
+            column.addView(textView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 2, 0, 0));
+
+            mediaContainer = new FrameLayout(context);
+            mediaImageView = new BackupImageView(context);
+            mediaImageView.setRoundRadius(dp(10));
+            mediaContainer.addView(mediaImageView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+
+            mediaBadge = new TextView(context);
+            mediaBadge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+            mediaBadge.setTextColor(0xFFFFFFFF);
+            mediaBadge.setBackground(Theme.createRoundRectDrawable(dp(8), 0x66000000));
+            mediaBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+            mediaContainer.addView(mediaBadge, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP, 6, 6, 0, 0));
+
+            mediaContainer.setOnClickListener(v -> {
+                if (boundMedia != null && delegate != null) {
+                    delegate.onCommentMediaClick(boundMedia, mediaImageView);
+                }
+            });
+            column.addView(mediaContainer, LayoutHelper.createLinear(MEDIA_MAX_WIDTH, MEDIA_MAX_WIDTH, 0, 6, 0, 0));
+        }
+
+        private void bindMedia(MessageObject object) {
+            boundMedia = object;
+            TLRPC.PhotoSize full = FileLoader.getClosestPhotoSizeWithSize(object.photoThumbs, 640);
+            TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(object.photoThumbs, 50);
+            int width = dp(MEDIA_MAX_WIDTH);
+            int height = width;
+            if (full != null && full.w > 0 && full.h > 0) {
+                height = Math.max(dp(90), Math.min(dp(240), (int) (width * (full.h / (float) full.w))));
+            }
+            ViewGroup.LayoutParams lp = mediaContainer.getLayoutParams();
+            lp.width = width;
+            lp.height = height;
+            mediaContainer.setLayoutParams(lp);
+            // без автоплея: в списке комментариев это статичное превью, видео играет в просмотрщике
+            mediaImageView.setImage(
+                ImageLocation.getForObject(full, object.photoThumbsObject), width + "_" + height,
+                ImageLocation.getForObject(thumb, object.photoThumbsObject), "50_50_b",
+                0, object);
+            if (object.isGif()) {
+                mediaBadge.setText("GIF");
+                mediaBadge.setVisibility(VISIBLE);
+            } else if (object.isVideo()) {
+                mediaBadge.setText("▶ " + AndroidUtilities.formatShortDuration((int) object.getDuration()));
+                mediaBadge.setVisibility(VISIBLE);
+            } else {
+                mediaBadge.setVisibility(GONE);
+            }
+            mediaContainer.setVisibility(VISIBLE);
         }
 
         public void bind(TLRPC.Message message) {
@@ -492,14 +579,28 @@ public class FeedCommentsPanel extends FrameLayout implements FeedCommentsLoader
             }
             nameTextView.setText(name);
             timeTextView.setText(LocaleController.stringForMessageListDate(message.date));
+
+            MessageObject media = mediaOf(message);
+            if (media != null) {
+                bindMedia(media);
+            } else {
+                boundMedia = null;
+                mediaContainer.setVisibility(GONE);
+                mediaImageView.setImageDrawable(null);
+            }
+
             if (!TextUtils.isEmpty(message.message)) {
                 textView.setTypeface(null);
                 textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
                 textView.setText(message.message);
+                textView.setVisibility(VISIBLE);
+            } else if (media != null) {
+                textView.setVisibility(GONE); // картинка/видео говорят сами за себя
             } else {
                 textView.setTypeface(android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC));
                 textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
                 textView.setText(getString(message.media instanceof TLRPC.TL_messageMediaPhoto ? R.string.AttachPhoto : R.string.AttachDocument));
+                textView.setVisibility(VISIBLE);
             }
         }
     }

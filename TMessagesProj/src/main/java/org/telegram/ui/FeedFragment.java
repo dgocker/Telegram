@@ -34,6 +34,7 @@ import org.telegram.messenger.feed.FeedController;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.Components.BackupImageView;
 import org.telegram.ui.Components.Bulletin;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.EmptyTextProgressView;
@@ -631,6 +632,41 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         }
         FeedController.getInstance(currentAccount).trackInteraction(post.dialogId, FeedController.INTERACTION_COMMENTS_OPEN);
     }
+
+    /* Медиа комментария: превью рисует панель, полноэкранный показ и проигрывание — PhotoViewer */
+
+    private BackupImageView commentMediaView;
+
+    @Override
+    public void onCommentMediaClick(MessageObject message, BackupImageView imageView) {
+        if (message == null || imageView == null || getParentActivity() == null) {
+            return;
+        }
+        commentMediaView = imageView;
+        ArrayList<MessageObject> single = new ArrayList<>();
+        single.add(message);
+        PhotoViewer.getInstance().setParentActivity(this);
+        PhotoViewer.getInstance().openPhoto(single, 0, message.getDialogId(), 0, 0, commentPhotoProvider);
+    }
+
+    private final PhotoViewer.EmptyPhotoViewerProvider commentPhotoProvider = new PhotoViewer.EmptyPhotoViewerProvider() {
+        @Override
+        public PhotoViewer.PlaceProviderObject getPlaceForPhoto(MessageObject messageObject, TLRPC.FileLocation fileLocation, int index, boolean needPreview, boolean closing) {
+            if (commentMediaView == null || !commentMediaView.isAttachedToWindow()) {
+                return null; // комментарий уехал из списка — просмотрщик закроется без анимации
+            }
+            int[] coords = new int[2];
+            commentMediaView.getLocationInWindow(coords);
+            PhotoViewer.PlaceProviderObject object = new PhotoViewer.PlaceProviderObject();
+            object.viewX = coords[0];
+            object.viewY = coords[1];
+            object.parentView = commentsPanel;
+            object.imageReceiver = commentMediaView.getImageReceiver();
+            object.thumb = object.imageReceiver.getBitmapSafe();
+            object.radius = object.imageReceiver.getRoundRadius(true);
+            return object;
+        }
+    };
 
     /* Адаптер пейджера */
 
