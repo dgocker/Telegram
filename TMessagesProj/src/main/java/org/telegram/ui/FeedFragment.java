@@ -31,6 +31,7 @@ import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.feed.FeedController;
+import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -85,6 +86,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         additionNavigationBarHeight = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
         getNotificationCenter().addObserver(this, NotificationCenter.smartFeedDidLoad);
         getNotificationCenter().addObserver(this, NotificationCenter.dialogsNeedReload);
+        getNotificationCenter().addObserver(this, NotificationCenter.didUpdateConnectionState);
         FeedController.getInstance(currentAccount).loadFeed(false);
         return super.onFragmentCreate();
     }
@@ -93,6 +95,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     public void onFragmentDestroy() {
         getNotificationCenter().removeObserver(this, NotificationCenter.smartFeedDidLoad);
         getNotificationCenter().removeObserver(this, NotificationCenter.dialogsNeedReload);
+        getNotificationCenter().removeObserver(this, NotificationCenter.didUpdateConnectionState);
         clearPrefetch();
         if (commentsPanel != null) {
             commentsPanel.onDestroy(); // остановить живой опрос комментов
@@ -284,6 +287,13 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             }
         } else if (id == NotificationCenter.dialogsNeedReload) {
             FeedController.getInstance(currentAccount).loadFeed(false);
+        } else if (id == NotificationCenter.didUpdateConnectionState) {
+            // сеть вернулась — дотягиваем свежее (у офлайн-ленты lastRefreshTime == 0,
+            // так что topUpFresh отработает сразу и позиция не собьётся)
+            if (getConnectionsManager().getConnectionState() == ConnectionsManager.ConnectionStateConnected) {
+                FeedController.getInstance(currentAccount).loadFeed(false);
+            }
+            updateEmptyView();
         }
     }
 
@@ -299,7 +309,9 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         if (controller.isLoading() || !controller.isLoadedOnce()) {
             emptyView.showProgress();
         } else {
-            emptyView.setText(getString(controller.isExhausted() && getPosts().isEmpty()
+            final boolean offline = getConnectionsManager().getConnectionState() == ConnectionsManager.ConnectionStateWaitingForNetwork;
+            emptyView.setText(getString(offline && getPosts().isEmpty()
+                ? R.string.WaitingForNetwork : controller.isExhausted() && getPosts().isEmpty()
                 ? R.string.SmartFeedAllSeen : R.string.SmartFeedNoPosts));
             emptyView.showTextView();
         }
@@ -326,6 +338,15 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
     private void trackCurrentDwell() {
         ArrayList<FeedController.FeedPost> posts = getPosts();
         if (currentPage >= 0 && currentPage < posts.size() && pageShownTime > 0) {
+            // офлайн-пост с незагруженным медиа реально не показан: не трогаем ни
+            // рейтинги (свайп с постера — не «не интересно»), ни seen (пост
+            // вернётся в ленту при появлении сети)
+            if (!org.telegram.messenger.ApplicationLoader.isNetworkOnline()) {
+                FeedPageView page = findPageView(currentPage);
+                if (page != null && !page.contentWasShown()) {
+                    return;
+                }
+            }
             FeedController.getInstance(currentAccount).trackPostDwell(
                 posts.get(currentPage), SystemClock.elapsedRealtime() - pageShownTime, false);
         }
@@ -403,7 +424,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
             if (messageObject.isVideo()) {
                 // видео следующего поста буферим заранее ТОЛЬКО на WiFi и только на 1 вперёд —
                 // чтобы фоновая загрузка не отъедала канал у текущего проигрываемого видео
-                if (offset == 1 && wifi && i == 0) {
+                if (offset <= 2 && wifi && i == 0) {
                     TLRPC.Document doc = messageObject.getDocument();
                     if (doc != null && !isVideoCached(doc)) {
                         FileLoader.getInstance(currentAccount).loadFile(doc, messageObject, FileLoader.PRIORITY_LOW, 1);

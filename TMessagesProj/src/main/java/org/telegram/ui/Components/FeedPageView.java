@@ -418,6 +418,31 @@ public class FeedPageView extends FrameLayout {
         return holder != null && holder.itemView instanceof MediaItemView ? (MediaItemView) holder.itemView : null;
     }
 
+    private boolean videoRenderedOnce;
+
+    /**
+     * Был ли контент поста реально показан. Текст и закэшированные фото — да;
+     * видео — только если хоть раз рендерилось либо файл есть в кэше. Нужен
+     * офлайн-гейту трекинга: свайп с «постера без видео» не должен штрафовать
+     * канал и помечать пост просмотренным.
+     */
+    public boolean contentWasShown() {
+        if (post == null || mediaMessages.isEmpty()) {
+            return true; // текстовый пост показывается всегда
+        }
+        int idx = carouselPosition >= 0 && carouselPosition < mediaMessages.size() ? carouselPosition : 0;
+        MessageObject mo = mediaMessages.get(idx);
+        if (mo.isVideo()) {
+            if (videoRenderedOnce) {
+                return true;
+            }
+            TLRPC.Document doc = mo.getDocument();
+            return doc != null && FileLoader.getInstance(currentAccount).getPathToAttach(doc, true).exists();
+        }
+        TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(mo.photoThumbs, AndroidUtilities.getPhotoSize());
+        return size == null || FileLoader.getInstance(currentAccount).getPathToAttach(size, true).exists();
+    }
+
     private boolean currentItemIsVideo() {
         return !mediaMessages.isEmpty()
             && carouselPosition < mediaMessages.size()
@@ -446,6 +471,13 @@ public class FeedPageView extends FrameLayout {
 
         try {
             TLRPC.Document document = messageObject.getDocument();
+            // офлайн и файла нет в кэше — не создаём плеер: остаётся постер с play,
+            // а не вечная крутилка буферизации
+            if (document != null
+                    && !org.telegram.messenger.ApplicationLoader.isNetworkOnline()
+                    && !FileLoader.getInstance(currentAccount).getPathToAttach(document, true).exists()) {
+                return;
+            }
             android.net.Uri uri = org.telegram.messenger.FileStreamLoadOperation.prepareUri(currentAccount, document, messageObject);
             if (uri == null) {
                 return;
@@ -462,7 +494,12 @@ public class FeedPageView extends FrameLayout {
                 }
 
                 @Override
-                public void onError(VideoPlayer player, Exception e) {}
+                public void onError(VideoPlayer player, Exception e) {
+                    // ошибка (обычно обрыв сети) — вернуть постер вместо вечной крутилки
+                    if (videoItem == boundItem) {
+                        AndroidUtilities.runOnUIThread(() -> releaseVideo());
+                    }
+                }
 
                 @Override
                 public void onVideoSizeChanged(int width, int height, int unappliedRotationDegrees, float pixelWidthHeightRatio) {
@@ -479,6 +516,7 @@ public class FeedPageView extends FrameLayout {
                 public void onRenderedFirstFrame() {
                     // сверяемся с текущим item — колбэк мог прийти после смены поста
                     if (videoItem == boundItem) {
+                        videoRenderedOnce = true;
                         boundItem.onVideoRendered();
                     }
                 }
@@ -563,6 +601,7 @@ public class FeedPageView extends FrameLayout {
 
     public void setPost(FeedController.FeedPost newPost) {
         post = newPost;
+        videoRenderedOnce = false;
         carouselPosition = 0;
         fullTextShown = false;
         fullTextOverlay.setVisibility(GONE);

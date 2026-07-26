@@ -7,10 +7,14 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BaseController;
 import org.telegram.messenger.ChatObject;
+import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.Utilities;
+import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
@@ -233,6 +237,7 @@ public class FeedController extends BaseController {
     private boolean loading;
     private boolean loadedOnce;
     private boolean exhaustedAll;
+    private boolean sawNetworkError;
     private long lastRefreshTime;
 
     public ArrayList<FeedPost> getPosts() {
@@ -300,6 +305,16 @@ public class FeedController extends BaseController {
             getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
             return;
         }
+        sawNetworkError = false;
+        // офлайн-старт: сети нет — показываем снапшот прошлой сессии и не вешаем
+        // 32 запроса в очередь (loading залип бы со спиннером до реконнекта)
+        if (posts.isEmpty()
+                && getConnectionsManager().getConnectionState() == ConnectionsManager.ConnectionStateWaitingForNetwork
+                && restoreSnapshot()) {
+            loadedOnce = true;
+            getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
+            return;
+        }
         posts.clear();
         candidatePool.clear();
         feedKeys.clear();
@@ -317,6 +332,10 @@ public class FeedController extends BaseController {
                 checkExhaustion();
             } finally {
                 loading = false;
+            }
+            // сеть формально есть, но запросы упали — фолбэк на снапшот
+            if (posts.isEmpty() && sawNetworkError && restoreSnapshot()) {
+                exhaustedAll = false;
             }
             getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
             // первая загрузка ничего не разместила (всё просмотрено) — идём глубже
@@ -507,8 +526,12 @@ public class FeedController extends BaseController {
                                 }
                                 collected.addAll(res.messages);
                             }
-                        } else {
+                        } else if (error == null) {
                             channelExhausted.add(dialogId);
+                        } else {
+                            // сетевая ошибка ≠ канал исчерпан: иначе один офлайн-проход
+                            // гасил все каналы и лента залипала в «всё просмотрено»
+                            sawNetworkError = true;
                         }
                     } catch (Throwable e) {
                         FileLog.e(e);
@@ -759,6 +782,193 @@ public class FeedController extends BaseController {
             posts.add(pick);
             placed++;
         }
+        saveSnapshot();
+    }
+
+    /*
+     * Снапшот ленты для офлайна: последние посты + непросмотренный запас пула,
+     * штатной TL-сериализацией в файл (паттерн драфтов MediaDataController).
+     * Читается ТОЛЬКО когда сети нет (или все запросы упали) — онлайн-путь
+     * не меняется, БД (MessagesStorage) не трогается.
+     */
+
+    private static final int SNAPSHOT_VERSION = 1;
+    private static final int SNAPSHOT_MAX_POSTS = 50;
+    private static final int SNAPSHOT_MAX_POOL = 40;
+
+    private java.io.File snapshotFile() {
+        return new java.io.File(ApplicationLoader.getFilesDirFixed(), "feed_snapshot_" + currentAccount);
+    }
+
+    /** Плоская копия поста для фоновой записи (сам ArrayList альбома может домутироваться склейкой). */
+    private static class SnapshotEntry {
+        long dialogId;
+        String caption;
+        ArrayList<TLRPC.Message> messages;
+    }
+
+    private static SnapshotEntry snapshotEntryOf(FeedPost post) {
+        SnapshotEntry e = new SnapshotEntry();
+        e.dialogId = post.dialogId;
+        e.caption = post.externalCaption == null ? "" : post.externalCaption;
+        e.messages = new ArrayList<>();
+        if (post.album != null) {
+            for (int i = 0; i < post.album.size(); i++) {
+                e.messages.add(post.album.get(i).messageOwner);
+            }
+        } else {
+            e.messages.add(post.message.messageOwner);
+        }
+        return e;
+    }
+
+    private void saveSnapshot() {
+        if (posts.isEmpty() && candidatePool.isEmpty()) {
+            return; // пустой офлайн-проход не должен затирать рабочий снапшот
+        }
+        final ArrayList<SnapshotEntry> entries = new ArrayList<>();
+        final int fromPosts = Math.max(0, posts.size() - SNAPSHOT_MAX_POSTS);
+        for (int i = fromPosts; i < posts.size(); i++) {
+            entries.add(snapshotEntryOf(posts.get(i)));
+        }
+        final int shownCount = entries.size();
+        for (int i = 0; i < candidatePool.size() && i < SNAPSHOT_MAX_POOL; i++) {
+            entries.add(snapshotEntryOf(candidatePool.get(i)));
+        }
+        final java.io.File file = snapshotFile();
+        Utilities.globalQueue.postRunnable(() -> {
+            android.util.AtomicFile atomic = new android.util.AtomicFile(file);
+            java.io.FileOutputStream stream = null;
+            try {
+                SerializedData data = new SerializedData();
+                data.writeInt32(SNAPSHOT_VERSION);
+                data.writeInt32(shownCount);
+                data.writeInt32(entries.size());
+                for (int i = 0; i < entries.size(); i++) {
+                    SnapshotEntry e = entries.get(i);
+                    data.writeInt64(e.dialogId);
+                    data.writeString(e.caption);
+                    data.writeInt32(e.messages.size());
+                    for (int m = 0; m < e.messages.size(); m++) {
+                        e.messages.get(m).serializeToStream(data);
+                    }
+                }
+                stream = atomic.startWrite();
+                stream.write(data.toByteArray());
+                atomic.finishWrite(stream);
+                data.cleanup();
+            } catch (Throwable ex) {
+                FileLog.e(ex);
+                if (stream != null) {
+                    atomic.failWrite(stream);
+                }
+            }
+        });
+    }
+
+    /** true — из снапшота восстановлено хоть что-то (в posts/candidatePool). */
+    private boolean restoreSnapshot() {
+        java.io.File file = snapshotFile();
+        if (!file.exists()) {
+            return false;
+        }
+        try {
+            byte[] bytes = new android.util.AtomicFile(file).readFully();
+            SerializedData data = new SerializedData(bytes);
+            if (data.readInt32(true) != SNAPSHOT_VERSION) {
+                throw new IllegalStateException("snapshot version mismatch");
+            }
+            final int shownCount = data.readInt32(true);
+            final int total = data.readInt32(true);
+            final int now = getConnectionsManager().getCurrentTime();
+            int restored = 0;
+            for (int i = 0; i < total; i++) {
+                long dialogId = data.readInt64(true);
+                String caption = data.readString(true);
+                int count = data.readInt32(true);
+                ArrayList<TLRPC.Message> messages = new ArrayList<>(count);
+                for (int m = 0; m < count; m++) {
+                    TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(true), true);
+                    if (msg == null) {
+                        throw new IllegalStateException("snapshot message deserialize failed");
+                    }
+                    messages.add(msg);
+                }
+                TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
+                if (chat == null || messages.isEmpty()) {
+                    continue; // канал ушёл из кэша диалогов — пост пропускаем
+                }
+                FeedPost post = new FeedPost();
+                post.dialogId = dialogId;
+                post.chat = chat;
+                if (!TextUtils.isEmpty(caption)) {
+                    post.externalCaption = caption;
+                }
+                if (messages.size() > 1) {
+                    post.album = new ArrayList<>(messages.size());
+                    for (int m = 0; m < messages.size(); m++) {
+                        post.album.add(new MessageObject(currentAccount, messages.get(m), false, true));
+                    }
+                    post.message = post.album.get(0);
+                    rebuildAlbum(post);
+                } else {
+                    post.message = new MessageObject(currentAccount, messages.get(0), false, true);
+                }
+                long key = feedKey(post.dialogId, post.getId());
+                if (feedKeys.contains(key)) {
+                    continue;
+                }
+                feedKeys.add(key);
+                post.muted = getMessagesController().isDialogMuted(post.dialogId, 0);
+                final boolean shown = i < shownCount;
+                if (shown) {
+                    posts.add(post);
+                } else {
+                    if (isPostSeen(post.dialogId, post.getId())) {
+                        feedKeys.remove(key);
+                        continue;
+                    }
+                    post.score = calculateScore(post, now);
+                    if (hasUncachedMedia(post)) {
+                        post.score -= 5f; // офлайн сначала то, что реально можно посмотреть
+                    }
+                    if (post.message.messageOwner.grouped_id != 0) {
+                        poolGroups.put(post.message.messageOwner.grouped_id, post);
+                    }
+                    candidatePool.add(post);
+                }
+                restored++;
+            }
+            if (restored > 0 && posts.isEmpty()) {
+                // показанных в снапшоте не было — выкладываем из восстановленного пула
+                placeNextBatch();
+            }
+            return restored > 0 && !posts.isEmpty();
+        } catch (Throwable e) {
+            FileLog.e(e);
+            new android.util.AtomicFile(file).delete();
+            return false;
+        }
+    }
+
+    /** Есть ли у поста медиа, которого нет в дисковом кэше (офлайн его не показать). */
+    private boolean hasUncachedMedia(FeedPost post) {
+        ArrayList<MessageObject> media = post.renderableMedia();
+        for (int i = 0; i < media.size(); i++) {
+            MessageObject mo = media.get(i);
+            TLRPC.Document doc = mo.getDocument();
+            if (doc != null) {
+                if (!FileLoader.getInstance(currentAccount).getPathToAttach(doc, true).exists()) {
+                    return true;
+                }
+            } else {
+                TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(mo.photoThumbs, AndroidUtilities.getPhotoSize());
+                if (size != null && !FileLoader.getInstance(currentAccount).getPathToAttach(size, true).exists()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean recentlyPlacedChannel(long dialogId, int window) {
