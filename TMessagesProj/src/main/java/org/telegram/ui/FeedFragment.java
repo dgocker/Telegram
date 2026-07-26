@@ -309,7 +309,7 @@ public class FeedFragment extends BaseFragment implements NotificationCenter.Not
         if (controller.isLoading() || !controller.isLoadedOnce()) {
             emptyView.showProgress();
         } else {
-            final boolean offline = getConnectionsManager().getConnectionState() == ConnectionsManager.ConnectionStateWaitingForNetwork;
+            final boolean offline = !org.telegram.messenger.ApplicationLoader.isNetworkOnline();
             emptyView.setText(getString(offline && getPosts().isEmpty()
                 ? R.string.WaitingForNetwork : controller.isExhausted() && getPosts().isEmpty()
                 ? R.string.SmartFeedAllSeen : R.string.SmartFeedNoPosts));

@@ -307,13 +307,16 @@ public class FeedController extends BaseController {
         }
         sawNetworkError = false;
         // офлайн-старт: сети нет — показываем снапшот прошлой сессии и не вешаем
-        // 32 запроса в очередь (loading залип бы со спиннером до реконнекта)
-        if (posts.isEmpty()
-                && getConnectionsManager().getConnectionState() == ConnectionsManager.ConnectionStateWaitingForNetwork
-                && restoreSnapshot()) {
+        // 32 запроса в очередь (loading залип бы со спиннером до реконнекта).
+        // ВАЖНО: проверка по реальной связности, а не по состоянию ConnectionsManager —
+        // на холодном старте в авиарежиме он ещё Connecting, не WaitingForNetwork
+        if (!ApplicationLoader.isNetworkOnline()) {
+            if (posts.isEmpty()) {
+                restoreSnapshot();
+            }
             loadedOnce = true;
             getNotificationCenter().postNotificationName(NotificationCenter.smartFeedDidLoad);
-            return;
+            return; // сеть появится — didUpdateConnectionState перезапустит загрузку
         }
         posts.clear();
         candidatePool.clear();
