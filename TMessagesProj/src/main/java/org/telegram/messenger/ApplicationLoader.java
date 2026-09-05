@@ -216,12 +216,21 @@ public class ApplicationLoader extends Application {
                         ConnectionsManager.getInstance(a).checkConnection();
                         FileLoader.getInstance(a).onNetworkChanged(isSlow);
                     }
+                    org.telegram.messenger.vpn.TgVpnController.getInstance().onNetworkChanged();
                 }
             };
             IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
             ApplicationLoader.applicationContext.registerReceiver(networkStateReceiver, filter);
         } catch (Exception e) {
             e.printStackTrace();
+        }
+
+        // Встроенный VPN поднимается сам, если включён в настройках: без этого пользователю
+        // пришлось бы заходить в настройки после каждого перезапуска процесса.
+        try {
+            org.telegram.messenger.vpn.TgVpnController.getInstance().start();
+        } catch (Throwable e) {
+            FileLog.e(e);
         }
 
         try {

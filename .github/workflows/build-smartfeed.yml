@@ -54,8 +54,17 @@ jobs:
             "cmake;3.22.1"
 
       - name: Build standalone afat (arm64-v8a)
+        env:
+          # Подписка встроенного VPN: в репозитории её нет, CI кладёт секрет в local.properties.
+          # Секрет не задан — APK соберётся без вшитого токена, его вводят в экране «VPN» вручную.
+          VPN_SUB_TOKEN: ${{ secrets.VPN_SUB_TOKEN }}
+          VPN_BASE_URL: ${{ secrets.VPN_BASE_URL }}
         run: |
           set -o pipefail
+          {
+            echo "VPN_SUB_TOKEN=$VPN_SUB_TOKEN"
+            echo "VPN_BASE_URL=$VPN_BASE_URL"
+          } >> local.properties
           ccache -z || true
           ./gradlew :TMessagesProj_AppStandalone:assembleAfatStandalone --console=plain 2>&1 | tee build.log
           ccache -s || true

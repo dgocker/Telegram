@@ -82,6 +82,8 @@ dependencies {
     implementation 'com.microsoft.onnxruntime:onnxruntime-extensions-android:0.13.0'
 
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    // ядро sing-box для встроенного VPN; в APK его кладут app-модули (как libgsaverification)
+    compileOnly files('libs/libbox.aar')
 }
 
 def isWindows = String.valueOf(DefaultNativePlatform.currentOperatingSystem.toFamilyName() == OperatingSystemFamily.WINDOWS)
@@ -115,6 +117,11 @@ android {
     defaultConfig {
         minSdkVersion 24
         targetSdkVersion 35
+
+        // Подписка встроенного VPN. Значения берутся из local.properties (файл не в гите),
+        // поэтому токен не утекает в публичный репозиторий, но зашит в собранный APK.
+        buildConfigField "String", "VPN_SUB_TOKEN", "\"" + (getProps("VPN_SUB_TOKEN") ?: "") + "\""
+        buildConfigField "String", "VPN_BASE_URL", "\"" + (getProps("VPN_BASE_URL") ?: "") + "\""
 
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
